@@ -1,0 +1,39 @@
+# 依赖
+node_modules
+
+# 构建输出
+dist
+dist-ssr
+
+# 测试输出
+coverage
+playwright-report
+test-results
+blob-report
+
+# 本地环境（保留 .env.example）
+.env
+.env.*
+!.env.example
+*.local
+
+# 日志
+logs
+*.log
+npm-debug.log*
+
+# 编辑器、系统与 Office/PDF 临时文件
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+~$*
+*.tmp
+*.sw?
+
+# Claude Code 本地配置
+.claude/
+
+# 需求与计划文档（仅本地保留）
+docs/

@@ -1,0 +1,3 @@
+# 与 Prettier 的 LF 约定一致，避免 Windows 检出为 CRLF 导致格式检查失败
+* text=auto eol=lf
+*.pdf binary

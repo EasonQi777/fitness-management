@@ -1,0 +1,25 @@
+/* 不引入 Tailwind Preflight，避免覆盖 Ant Design 基础样式；
+   antd 样式放入 antd 层，Tailwind 工具类可以覆盖它 */
+@layer theme, base, antd, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+@layer base {
+  html,
+  body,
+  #root {
+    margin: 0;
+    min-height: 100%;
+  }
+
+  body {
+    min-width: 320px;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+      'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    color: rgb(0 0 0 / 88%);
+    background: #f5f5f5;
+    -webkit-font-smoothing: antialiased;
+  }
+}
