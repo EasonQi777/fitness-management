@@ -26,6 +26,25 @@ export default defineConfig([
     },
   },
   {
+    // 认证信息只能经由 authStore 读写 localStorage
+    files: ['src/**/*.{js,jsx}'],
+    ignores: ['src/store/authStore.js', 'src/**/*.test.{js,jsx}'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        { name: 'localStorage', message: '请通过 useAuthStore 访问认证信息' },
+      ],
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'window',
+          property: 'localStorage',
+          message: '请通过 useAuthStore 访问认证信息',
+        },
+      ],
+    },
+  },
+  {
     files: ['*.config.js', 'e2e/**/*.js'],
     languageOptions: { globals: globals.node },
   },
