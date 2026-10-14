@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createErrorBody } from '../api/errors'
 import { http } from '../api/http'
 import { routes } from '../router/routes'
+import { authOf, FRONT_DESK, MANAGER } from '../test/fixtures'
 import { AUTH_STORAGE_KEY, useAuthStore } from './authStore'
 
 const initial = useAuthStore.getState()
@@ -24,7 +25,7 @@ function unauthorized() {
         reject(
           new AxiosError('401', 'ERR_BAD_REQUEST', config, null, {
             status: 401,
-            data: createErrorBody('UNAUTHORIZED', '登录已失效'),
+            data: createErrorBody('UNAUTHORIZED', '登录已失效，请重新登录'),
           }),
         )
       markCalled()
@@ -38,6 +39,9 @@ function unauthorized() {
     },
   }
 }
+
+const getLogs = (adapter) =>
+  http.get('/operation-logs', { adapter }).catch(() => {})
 
 let warning
 beforeEach(() => {
@@ -53,9 +57,9 @@ afterEach(() => {
 
 describe('401 处理', () => {
   test('携带当前 token 的 401 清除登录并提示', async () => {
-    auth().setAuth({ token: 'mock.a', username: 'a' })
+    auth().setAuth(authOf(FRONT_DESK))
     const r = unauthorized()
-    const p = http.get('/x', { adapter: r.adapter }).catch(() => {})
+    const p = getLogs(r.adapter)
     await r.fire()
     await p
     expect(auth()).toMatchObject({ token: null, signedOut: true })
@@ -63,37 +67,36 @@ describe('401 处理', () => {
     expect(warning).toHaveBeenCalledTimes(1)
   })
 
-  test('三个请求同时返回 401，只提示一次', async () => {
-    auth().setAuth({ token: 'mock.a', username: 'a' })
+  test('列表、日志等三个请求同时返回 401，只提示一次', async () => {
+    auth().setAuth(authOf(FRONT_DESK))
     const rs = [unauthorized(), unauthorized(), unauthorized()]
-    const ps = rs.map((r) =>
-      http.get('/x', { adapter: r.adapter }).catch(() => {}),
-    )
+    const ps = rs.map((r) => getLogs(r.adapter))
     await Promise.all(rs.map((r) => r.fire()))
     await Promise.all(ps)
     expect(warning).toHaveBeenCalledTimes(1)
     expect(auth().token).toBeNull()
   })
 
-  test('旧会话迟到的 401 不影响重新登录后的新会话', async () => {
-    auth().setAuth({ token: 'mock.old', username: 'a' })
+  test('前台下班后店长登录，前台旧会话迟到的 401 不影响店长', async () => {
+    auth().setAuth(authOf(FRONT_DESK))
     const late = unauthorized()
-    const p = http.get('/x', { adapter: late.adapter }).catch(() => {})
-    await late.sent // 请求已带着旧 token 发出
+    const p = getLogs(late.adapter)
+    await late.sent // 请求已带着前台的 token 发出
 
+    const manager = authOf(MANAGER)
     act(() => auth().clearAuth())
-    act(() => auth().setAuth({ token: 'mock.new', username: 'b' }))
+    act(() => auth().setAuth(manager))
     await late.fire()
     await p
 
-    expect(auth()).toMatchObject({ token: 'mock.new', username: 'b' })
-    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toContain('mock.new')
+    expect(auth()).toMatchObject(manager)
+    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toContain(manager.token)
     expect(warning).not.toHaveBeenCalled()
   })
 
-  test('未携带 token 的 401 不做处理', async () => {
+  test('未登录时的 401 不做处理', async () => {
     const r = unauthorized()
-    const p = http.get('/x', { adapter: r.adapter }).catch(() => {})
+    const p = getLogs(r.adapter)
     await r.fire()
     await p
     expect(warning).not.toHaveBeenCalled()
@@ -102,22 +105,26 @@ describe('401 处理', () => {
 })
 
 describe('页面流程', () => {
-  function renderLoggedIn(url, token = 'mock.t') {
-    auth().setAuth({ token, username: '张三' })
+  function renderLoggedIn(url, session = authOf(FRONT_DESK)) {
+    auth().setAuth(session)
     const router = createMemoryRouter(routes, { initialEntries: [url] })
     render(<RouterProvider router={router} />)
     return () => router.state.location.pathname + router.state.location.search
   }
 
   test('真实 mock 返回 401 后卸载受保护页面并回到登录页', async () => {
-    // 'mock.t' 不是合法的 mock token，受保护接口会返回 401
-    const location = renderLoggedIn('/orders/new?a=1')
-    expect(screen.getByText('张三')).toBeInTheDocument()
+    // 本地保存的 token 被截断，模拟服务无法识别，受保护接口返回 401
+    const broken = authOf(FRONT_DESK)
+    const location = renderLoggedIn('/orders/new', {
+      ...broken,
+      token: broken.token.slice(0, 18),
+    })
+    expect(screen.getByText('wangfang')).toBeInTheDocument()
 
     await act(() => http.get('/operation-logs').catch(() => {}))
 
     await waitFor(() => expect(location()).toBe('/login'))
-    expect(screen.queryByText('张三')).not.toBeInTheDocument()
+    expect(screen.queryByText('wangfang')).not.toBeInTheDocument()
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(warning).toHaveBeenCalledTimes(1)
   })
@@ -125,7 +132,10 @@ describe('页面流程', () => {
   test('手动退出与 401 使用同一流程：关闭弹窗、清除认证、不提示失效', async () => {
     const location = renderLoggedIn('/orders')
     act(() => {
-      Modal.confirm({ title: '确认撤单？' })
+      Modal.confirm({
+        title: '确认撤销以下 2 笔订单？',
+        content: 'FM20261006001、FM20261007001',
+      })
     })
     await waitFor(() =>
       expect(document.querySelector('.ant-modal-confirm')).not.toBeNull(),
@@ -144,19 +154,23 @@ describe('页面流程', () => {
     expect(warning).not.toHaveBeenCalled()
   })
 
-  test('退出后重新登录，旧会话的 401 不会把用户踢出', async () => {
-    const location = renderLoggedIn('/orders', 'mock.old')
+  test('前台退出后店长登录，前台旧会话的 401 不会把店长踢出', async () => {
+    const location = renderLoggedIn('/orders')
     const late = unauthorized()
-    const p = http.get('/x', { adapter: late.adapter }).catch(() => {})
+    const p = getLogs(late.adapter)
+    await late.sent
 
     await userEvent.click(screen.getByRole('button', { name: /退出登录/ }))
-    await userEvent.type(screen.getByLabelText('账号'), 'b')
-    await userEvent.type(screen.getByLabelText('密码'), 'x{Enter}')
+    await userEvent.type(screen.getByLabelText('账号'), MANAGER.username)
+    await userEvent.type(
+      screen.getByLabelText('密码'),
+      `${MANAGER.password}{Enter}`,
+    )
     await waitFor(() => expect(location()).toBe('/orders'))
 
     await late.fire()
     await p
     expect(location()).toBe('/orders')
-    expect(auth().username).toBe('b')
+    expect(auth().username).toBe('lijun')
   })
 })

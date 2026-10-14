@@ -3,16 +3,21 @@ import { formatAmount, formatDateTime } from './format'
 
 describe('formatAmount', () => {
   test.each([
-    [12000, '12,000.00'],
-    [1200, '1,200.00'],
-    [1234567, '1,234,567.00'],
-    [0, '0.00'],
-    [4800, '4,800.00'],
-  ])('%s → %s', (amount, text) => expect(formatAmount(amount)).toBe(text))
-
-  test.each([null, undefined, NaN, '12000'])('%j → —', (amount) =>
-    expect(formatAmount(amount)).toBe('—'),
+    ['十年卡', 12000, '12,000.00'],
+    ['一年卡', 1200, '1,200.00'],
+    ['12 笔订单续卡 10 年的总额', 115200, '115,200.00'],
+    ['活动赠送卡', 0, '0.00'],
+    ['续卡 5 年（八折）', 4800, '4,800.00'],
+  ])('%s：%s → %s', (_, amount, text) =>
+    expect(formatAmount(amount)).toBe(text),
   )
+
+  test.each([
+    ['历史数据缺失', null],
+    ['字段未返回', undefined],
+    ['计算异常', NaN],
+    ['接口返回成字符串', '12000'],
+  ])('%s（%j）→ —', (_, amount) => expect(formatAmount(amount)).toBe('—'))
 
   test('零金额与空金额不混淆', () => {
     expect(formatAmount(0)).not.toBe(formatAmount(null))

@@ -76,12 +76,16 @@ describe('操作资格', () => {
     expect(Object.keys(ORDER_STATUS)).toHaveLength(6)
   })
 
-  test.each([undefined, null, '', 'EXPIRED', 'unknown', 'constructor'])(
-    '未知状态 %j 不允许任何操作',
-    (status) => {
-      expect(canRenew(status)).toBe(false)
-      expect(canCancel(status)).toBe(false)
-      expect(canExport(status)).toBe(false)
-    },
-  )
+  test.each([
+    ['缺失状态', undefined],
+    ['状态为 null', null],
+    ['空字符串', ''],
+    ['其他系统传来的大写编码', 'EXPIRED'],
+    ['新版本后端新增的退款状态', 'refunded'],
+    ['构造请求传入的原型属性名', 'constructor'],
+  ])('%s（%j）不允许任何操作', (_, status) => {
+    expect(canRenew(status)).toBe(false)
+    expect(canCancel(status)).toBe(false)
+    expect(canExport(status)).toBe(false)
+  })
 })

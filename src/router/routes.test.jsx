@@ -2,15 +2,15 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { beforeEach, describe, expect, test } from 'vitest'
-import { routes } from './routes'
 import { useAuthStore } from '../store/authStore'
+import { authOf, FRONT_DESK } from '../test/fixtures'
+import { routes } from './routes'
 
 const initial = useAuthStore.getState()
 
 function renderAt(url, { loggedIn = false } = {}) {
   useAuthStore.setState({
-    token: loggedIn ? 'mock.t' : null,
-    username: loggedIn ? 'admin' : null,
+    ...(loggedIn ? authOf(FRONT_DESK) : { token: null, username: null }),
     restored: true,
   })
   const router = createMemoryRouter(routes, { initialEntries: [url] })
@@ -20,6 +20,8 @@ function renderAt(url, { loggedIn = false } = {}) {
   return { router, location }
 }
 
+const login = () =>
+  act(() => useAuthStore.getState().setAuth(authOf(FRONT_DESK)))
 const heading = (name) => screen.getByRole('heading', { name })
 
 beforeEach(() => {
@@ -46,35 +48,31 @@ describe('未登录', () => {
     expect(renderAt('/').location()).toBe('/login')
   })
 
-  test('登录后回到原受保护页面并保留查询参数', () => {
-    const { location } = renderAt('/orders/new?from=menu')
-    act(() =>
-      useAuthStore.getState().setAuth({ token: 'mock.t', username: 'a' }),
-    )
-    expect(location()).toBe('/orders/new?from=menu')
-    expect(heading('新建订单')).toBeInTheDocument()
+  test('从收藏夹打开已到期列表，登录后回到原页面并保留查询参数', () => {
+    const { location } = renderAt('/orders?tab=expired&memberName=%E7%8E%8B')
+    login()
+    expect(location()).toBe('/orders?tab=expired&memberName=%E7%8E%8B')
+    expect(heading('订单列表')).toBeInTheDocument()
   })
 
   test('没有回跳地址时登录后进入订单列表', () => {
     const { location } = renderAt('/login')
-    act(() =>
-      useAuthStore.getState().setAuth({ token: 'mock.t', username: 'a' }),
-    )
+    login()
     expect(location()).toBe('/orders')
   })
 
-  test.each(['https://evil.com', '//evil.com', '/login', '/unknown'])(
-    '不安全的回跳地址 %s 登录后进入订单列表',
-    (redirect) => {
-      const { location } = renderAt(
-        `/login?redirect=${encodeURIComponent(redirect)}`,
-      )
-      act(() =>
-        useAuthStore.getState().setAuth({ token: 'mock.t', username: 'a' }),
-      )
-      expect(location()).toBe('/orders')
-    },
-  )
+  test.each([
+    ['钓鱼网站', 'https://fitness-login.example.com/orders'],
+    ['协议相对地址', '//fitness-admin.example.net/orders'],
+    ['登录页自身', '/login'],
+    ['不存在的后台页面', '/admin/settings'],
+  ])('不安全的回跳地址（%s）登录后进入订单列表', (_, redirect) => {
+    const { location } = renderAt(
+      `/login?redirect=${encodeURIComponent(redirect)}`,
+    )
+    login()
+    expect(location()).toBe('/orders')
+  })
 
   test('恢复登录态前不渲染受保护内容也不跳转', () => {
     useAuthStore.setState({ restored: false })
@@ -111,17 +109,20 @@ describe('已登录', () => {
 })
 
 describe('404', () => {
-  test.each([false, true])('未知路径显示 404（已登录：%s）', (loggedIn) => {
-    renderAt('/no-such-page', { loggedIn })
+  test.each([false, true])('输错地址显示 404（已登录：%s）', (loggedIn) => {
+    renderAt('/order', { loggedIn })
     expect(screen.getByText('页面不存在')).toBeInTheDocument()
   })
 
   test.each([
     [false, '/login'],
     [true, '/orders'],
-  ])('返回入口有效（已登录：%s → %s）', async (loggedIn, target) => {
-    const { location } = renderAt('/orders/123', { loggedIn })
-    await userEvent.click(screen.getByRole('button', { name: '返回首页' }))
-    expect(location()).toBe(target)
-  })
+  ])(
+    '打开不存在的订单详情地址，返回入口有效（已登录：%s → %s）',
+    async (loggedIn, target) => {
+      const { location } = renderAt('/orders/o-016', { loggedIn })
+      await userEvent.click(screen.getByRole('button', { name: '返回首页' }))
+      expect(location()).toBe(target)
+    },
+  )
 })
