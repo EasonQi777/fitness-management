@@ -9,21 +9,35 @@ const httpError = (status, data) =>
 const errorFor = (code, message, extra) =>
   httpError(ERROR_STATUS[code], createErrorBody(code, message, extra))
 
+// 初始数据中的真实订单
+const CANCELLED_ZHENGKAI = {
+  id: 'o-016',
+  orderNo: 'FM20260719001',
+  reason: '订单状态为「已取消」，仅已到期订单可续卡',
+}
+const COMPLETED_ZHANGWEI = {
+  id: 'o-010',
+  orderNo: 'FM20251108001',
+  reason: '订单状态为「已完成」，仅待制卡、待寄卡订单可撤单',
+}
+
 describe('createErrorBody', () => {
   test('生成统一结构', () => {
     expect(
-      createErrorBody('INVALID_ORDERS', '有不可续卡订单', {
-        invalidOrders: [{ id: '1', orderNo: 'NO1', reason: '状态不是已到期' }],
+      createErrorBody('INVALID_ORDERS', '所选订单中有 1 笔不可续卡', {
+        invalidOrders: [CANCELLED_ZHENGKAI],
       }),
     ).toEqual({
       code: 'INVALID_ORDERS',
-      message: '有不可续卡订单',
-      invalidOrders: [{ id: '1', orderNo: 'NO1', reason: '状态不是已到期' }],
+      message: '所选订单中有 1 笔不可续卡',
+      invalidOrders: [CANCELLED_ZHENGKAI],
     })
   })
 
-  test('拒绝未定义的错误码', () => {
-    expect(() => createErrorBody('NOPE', 'x')).toThrow('未知错误码')
+  test('拒绝契约外的错误码', () => {
+    expect(() => createErrorBody('PERMISSION_DENIED', '无操作权限')).toThrow(
+      '未知错误码',
+    )
   })
 
   test('状态码约定', () => {
@@ -43,13 +57,13 @@ describe('parseApiError', () => {
   })
 
   test('401 为认证失效', () => {
-    const e = parseApiError(errorFor('UNAUTHORIZED', '登录已失效'))
+    const e = parseApiError(errorFor('UNAUTHORIZED', '登录已失效，请重新登录'))
     expect(e).toMatchObject({ kind: 'unauthorized', status: 401 })
   })
 
   test('字段错误', () => {
     const e = parseApiError(
-      errorFor('VALIDATION_ERROR', '参数错误', {
+      errorFor('VALIDATION_ERROR', '订单信息填写有误', {
         fieldErrors: { phone: '请输入正确的 11 位手机号' },
       }),
     )
@@ -61,17 +75,25 @@ describe('parseApiError', () => {
   })
 
   test('批量业务错误', () => {
-    const invalidOrders = [{ id: '1', orderNo: 'NO1', reason: '状态不可撤单' }]
+    const invalidOrders = [COMPLETED_ZHANGWEI]
     const e = parseApiError(
-      errorFor('INVALID_ORDERS', '有不可撤单订单', { invalidOrders }),
+      errorFor('INVALID_ORDERS', '所选订单中有 1 笔不可撤单', {
+        invalidOrders,
+      }),
     )
     expect(e).toMatchObject({ kind: 'batch', invalidOrders })
   })
 
   test('版本冲突附带订单时按批量错误处理', () => {
     const e = parseApiError(
-      errorFor('VERSION_CONFLICT', '订单已变化', {
-        invalidOrders: [{ id: '1', orderNo: 'NO1', reason: '订单已被修改' }],
+      errorFor('VERSION_CONFLICT', '订单已被修改，请刷新后重试', {
+        invalidOrders: [
+          {
+            id: 'o-005',
+            orderNo: 'FM20190309001',
+            reason: '订单已被其他人修改，请刷新后重试',
+          },
+        ],
       }),
     )
     expect(e).toMatchObject({
@@ -82,17 +104,12 @@ describe('parseApiError', () => {
   })
 
   test.each([
-    ['IDEMPOTENCY_CONFLICT', 409],
-    ['INTERNAL_ERROR', 500],
-    ['VALIDATION_ERROR', 400], // 无 fieldErrors 的参数错误
-  ])('%s 为普通错误', (code, status) => {
-    const e = parseApiError(errorFor(code, '出错了'))
-    expect(e).toMatchObject({
-      kind: 'general',
-      status,
-      code,
-      message: '出错了',
-    })
+    ['IDEMPOTENCY_CONFLICT', 409, '重复提交的请求与首次提交内容不一致'],
+    ['INTERNAL_ERROR', 500, '服务异常，请稍后重试'],
+    ['VALIDATION_ERROR', 400, '每页数量只能是 10、20 或 50'], // 无 fieldErrors
+  ])('%s 为普通错误', (code, status, message) => {
+    const e = parseApiError(errorFor(code, message))
+    expect(e).toMatchObject({ kind: 'general', status, code, message })
   })
 
   test('无响应（网络错误）', () => {
@@ -104,14 +121,19 @@ describe('parseApiError', () => {
     })
   })
 
-  test('响应体不符合契约时使用状态码提示', () => {
-    expect(parseApiError(httpError(502, '<html>')).message).toBe(
+  test('网关返回 HTML 错误页时使用状态码提示', () => {
+    const nginx502 =
+      '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>'
+    expect(parseApiError(httpError(502, nginx502)).message).toBe(
       '请求失败（502）',
     )
   })
 
-  test('非 axios 错误不抛异常', () => {
-    expect(parseApiError(new Error('boom')).kind).toBe('general')
+  test('页面代码自身的异常不会让解析失败', () => {
+    const bug = new TypeError(
+      "Cannot read properties of undefined (reading 'items')",
+    )
+    expect(parseApiError(bug).kind).toBe('general')
     expect(parseApiError(undefined).kind).toBe('general')
   })
 })

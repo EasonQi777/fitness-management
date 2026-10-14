@@ -3,6 +3,7 @@ import { message } from 'antd'
 import { AxiosError, CanceledError } from 'axios'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { useAuthStore } from '../store/authStore'
+import { authOf, FRONT_DESK, MANAGER } from '../test/fixtures'
 import { createErrorBody } from './errors'
 import { http } from './http'
 
@@ -10,7 +11,7 @@ const initial = useAuthStore.getState()
 
 // 单次请求替换 adapter：保留实例拦截器，精确控制响应
 const ok = (config) =>
-  Promise.resolve({ data: {}, status: 200, headers: {}, config })
+  Promise.resolve({ data: { items: [] }, status: 200, headers: {}, config })
 const failWith = (status, body) => (config) =>
   Promise.reject(
     new AxiosError('fail', 'ERR_BAD_RESPONSE', config, null, {
@@ -19,7 +20,7 @@ const failWith = (status, body) => (config) =>
     }),
   )
 const request = (adapter, extra) =>
-  http.get('/test', { adapter, ...extra }).catch((e) => e)
+  http.get('/operation-logs', { adapter, ...extra }).catch((e) => e)
 
 let toast
 beforeEach(() => {
@@ -33,23 +34,25 @@ afterEach(() => {
 })
 
 describe('请求拦截器', () => {
-  test('注入当前 token，切换登录后使用最新 token', async () => {
-    let auth
+  test('交接班换人登录后，请求使用新员工的 token', async () => {
+    let sent
     const capture = (config) => {
-      auth = config.headers.Authorization
+      sent = config.headers.Authorization
       return ok(config)
     }
-    useAuthStore.getState().setAuth({ token: 'mock.a', username: 'a' })
-    await http.get('/test', { adapter: capture })
-    expect(auth).toBe('Bearer mock.a')
-
-    useAuthStore.getState().setAuth({ token: 'mock.b', username: 'b' })
-    await http.get('/test', { adapter: capture })
-    expect(auth).toBe('Bearer mock.b')
+    const frontDesk = authOf(FRONT_DESK)
+    useAuthStore.getState().setAuth(frontDesk)
+    await http.get('/operation-logs', { adapter: capture })
+    expect(sent).toBe(`Bearer ${frontDesk.token}`)
 
     useAuthStore.getState().clearAuth()
-    await http.get('/test', { adapter: capture })
-    expect(auth).toBeUndefined()
+    await http.get('/operation-logs', { adapter: capture })
+    expect(sent).toBeUndefined()
+
+    const manager = authOf(MANAGER)
+    useAuthStore.getState().setAuth(manager)
+    await http.get('/operation-logs', { adapter: capture })
+    expect(sent).toBe(`Bearer ${manager.token}`)
   })
 
   test('baseURL 为 /api', () => {
@@ -76,57 +79,73 @@ describe('错误提示', () => {
 
   test.each([
     [
-      '字段错误',
+      '新建订单手机号有误（字段错误）',
       failWith(
         400,
-        createErrorBody('VALIDATION_ERROR', '参数错误', {
-          fieldErrors: { phone: '手机号格式不正确' },
+        createErrorBody('VALIDATION_ERROR', '订单信息填写有误', {
+          fieldErrors: { phone: '请输入正确的 11 位手机号' },
         }),
       ),
     ],
     [
-      '批量业务错误',
+      '批量续卡中混入已取消订单（批量错误）',
       failWith(
         400,
-        createErrorBody('INVALID_ORDERS', '有不合格订单', {
-          invalidOrders: [{ id: '1', orderNo: 'NO1', reason: '状态不符' }],
+        createErrorBody('INVALID_ORDERS', '所选订单中有 1 笔不可续卡', {
+          invalidOrders: [
+            {
+              id: 'o-016',
+              orderNo: 'FM20260719001',
+              reason: '订单状态为「已取消」，仅已到期订单可续卡',
+            },
+          ],
         }),
       ),
     ],
-    ['认证失效', failWith(401, createErrorBody('UNAUTHORIZED', '登录已失效'))],
+    [
+      '登录失效',
+      failWith(401, createErrorBody('UNAUTHORIZED', '登录已失效，请重新登录')),
+    ],
     ['请求取消', () => Promise.reject(new CanceledError())],
-  ])('%s 不由请求层提示', async (_, adapter) => {
+  ])('%s：不由请求层提示', async (_, adapter) => {
     await request(adapter)
     expect(toast).not.toHaveBeenCalled()
   })
 
   test('skipErrorToast 时由页面自行展示', async () => {
-    await request(failWith(500, createErrorBody('INTERNAL_ERROR', 'x')), {
-      skipErrorToast: true,
-    })
+    await request(
+      failWith(500, createErrorBody('INTERNAL_ERROR', '服务异常，请稍后重试')),
+      { skipErrorToast: true },
+    )
     expect(toast).not.toHaveBeenCalled()
   })
 
   test('AbortController 取消真实 mock 请求不提示', async () => {
     const controller = new AbortController()
-    const p = http.post('/auth/login', {}, { signal: controller.signal })
+    const p = http.post('/auth/login', FRONT_DESK, {
+      signal: controller.signal,
+    })
     controller.abort()
     await p.catch(() => {})
     expect(toast).not.toHaveBeenCalled()
   })
 
-  test('登录失败（字段错误）不提示，也不清除登录态', async () => {
-    useAuthStore.getState().setAuth({ token: 'mock.t', username: 'u' })
+  test('另一个标签页登录时未填写账号，不提示也不清除当前登录', async () => {
+    const manager = authOf(MANAGER)
+    useAuthStore.getState().setAuth(manager)
     await http
       .post('/auth/login', { username: '', password: '' })
       .catch(() => {})
     expect(toast).not.toHaveBeenCalled()
-    expect(useAuthStore.getState().token).toBe('mock.t')
+    expect(useAuthStore.getState().token).toBe(manager.token)
   })
 
   test('并发的相同错误只显示一条提示', async () => {
     toast.mockRestore()
-    const adapter = failWith(500, createErrorBody('INTERNAL_ERROR', '服务异常'))
+    const adapter = failWith(
+      500,
+      createErrorBody('INTERNAL_ERROR', '服务异常，请稍后重试'),
+    )
     await Promise.all([request(adapter), request(adapter), request(adapter)])
     await waitFor(() =>
       expect(document.querySelectorAll('.ant-message-notice')).toHaveLength(1),

@@ -4,11 +4,12 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { routes } from '../router/routes'
 import { AUTH_STORAGE_KEY, useAuthStore } from '../store/authStore'
+import { authOf, FRONT_DESK } from '../test/fixtures'
 
 const initial = useAuthStore.getState()
 
 function renderAt(url) {
-  useAuthStore.getState().setAuth({ token: 'mock.t', username: '张三' })
+  useAuthStore.getState().setAuth(authOf(FRONT_DESK))
   const router = createMemoryRouter(routes, { initialEntries: [url] })
   render(<RouterProvider router={router} />)
   return {
@@ -31,7 +32,7 @@ beforeEach(() => {
 describe('后台布局', () => {
   test('顶部显示当前用户名与退出入口', () => {
     renderAt('/orders')
-    expect(screen.getByText('张三')).toBeInTheDocument()
+    expect(screen.getByText('wangfang')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /退出登录/ })).toBeInTheDocument()
   })
 
@@ -72,11 +73,11 @@ describe('后台布局', () => {
     expect(location()).toBe('/login')
     expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull()
     expect(useAuthStore.getState().token).toBeNull()
-    expect(screen.queryByText('张三')).not.toBeInTheDocument()
+    expect(screen.queryByText('wangfang')).not.toBeInTheDocument()
   })
 
   test('404 页面不使用后台布局', () => {
-    renderAt('/orders/123')
+    renderAt('/orders/o-016')
     expect(screen.getByText('页面不存在')).toBeInTheDocument()
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
