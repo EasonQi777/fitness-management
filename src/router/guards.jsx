@@ -2,12 +2,16 @@ import { Navigate, Outlet, useLocation, useSearchParams } from 'react-router'
 import { useAuthStore } from '../store/authStore'
 import { DEFAULT_REDIRECT, getSafeRedirect } from '../utils/redirect'
 
-/** 未登录时跳转登录页，并在 redirect 参数中保存当前地址 */
+/**
+ * 未登录时跳转登录页：直接访问时在 redirect 参数中保存当前地址；
+ * 会话结束（退出或 401）时直接回到登录页，不保存地址
+ */
 export function RequireAuth() {
-  const { token, restored } = useAuthStore()
+  const { token, restored, signedOut } = useAuthStore()
   const { pathname, search } = useLocation()
   if (!restored) return null
   if (!token) {
+    if (signedOut) return <Navigate to="/login" replace />
     const redirect = encodeURIComponent(pathname + search)
     return <Navigate to={`/login?redirect=${redirect}`} replace />
   }

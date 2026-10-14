@@ -1,3 +1,4 @@
+import AdminLayout from '../layouts/AdminLayout'
 import LoginPage from '../pages/LoginPage'
 import NewOrderPage from '../pages/NewOrderPage'
 import NotFoundPage from '../pages/NotFoundPage'
@@ -13,8 +14,13 @@ export const routes = [
   {
     element: <RequireAuth />,
     children: [
-      { path: '/orders', element: <OrdersPage /> },
-      { path: '/orders/new', element: <NewOrderPage /> },
+      {
+        element: <AdminLayout />,
+        children: [
+          { path: '/orders', element: <OrdersPage /> },
+          { path: '/orders/new', element: <NewOrderPage /> },
+        ],
+      },
     ],
   },
   { path: '*', element: <NotFoundPage /> },

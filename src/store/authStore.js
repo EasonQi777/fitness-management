@@ -40,11 +40,13 @@ function removeStorage() {
 /**
  * token / username：当前登录信息，未登录为 null
  * restored：是否已从 localStorage 恢复，恢复前路由守卫不应做跳转判断
+ * signedOut：本次会话是否已退出（主动退出或 401），用于登录页不保存回跳地址
  */
 export const useAuthStore = create((set) => ({
   token: null,
   username: null,
   restored: false,
+  signedOut: false,
 
   /** 启动时调用一次：从 localStorage 恢复登录态，损坏数据会被清除 */
   restore() {
@@ -53,6 +55,7 @@ export const useAuthStore = create((set) => ({
       token: auth?.token ?? null,
       username: auth?.username ?? null,
       restored: true,
+      signedOut: false,
     })
   },
 
@@ -61,11 +64,11 @@ export const useAuthStore = create((set) => ({
     if (!isNonEmptyString(token) || !isNonEmptyString(username))
       throw new Error('setAuth 需要非空的 token 和 username')
     writeStorage({ token, username })
-    set({ token, username, restored: true })
+    set({ token, username, restored: true, signedOut: false })
   },
 
   clearAuth() {
     removeStorage()
-    set({ token: null, username: null, restored: true })
+    set({ token: null, username: null, restored: true, signedOut: true })
   },
 }))

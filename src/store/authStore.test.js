@@ -41,6 +41,18 @@ describe('登录与退出', () => {
     expect(stored()).toBeNull()
     expect(state()).toMatchObject({ token: null, username: null })
   })
+
+  test('signedOut：退出后为 true，重新登录或恢复后为 false', () => {
+    expect(state().signedOut).toBe(false)
+    state().setAuth({ token: 't', username: 'u' })
+    state().clearAuth()
+    expect(state().signedOut).toBe(true)
+    state().setAuth({ token: 't', username: 'u' })
+    expect(state().signedOut).toBe(false)
+    state().clearAuth()
+    state().restore()
+    expect(state().signedOut).toBe(false)
+  })
 })
 
 describe('恢复登录态', () => {
