@@ -32,7 +32,7 @@
 | -------- | ---------------------------------------------- | ----------------------- |
 | 框架     | react / react-dom                              | 18.3.1                  |
 | 路由     | react-router                                   | 7.18.4                  |
-| 组件库   | antd / @ant-design/cssinjs                     | 5.29.3 / 1.24.0         |
+| 组件库   | antd / @ant-design/cssinjs / @ant-design/icons | 5.29.3 / 1.24.0 / 5.6.1 |
 | 样式     | tailwindcss / @tailwindcss/vite                | 4.3.3                   |
 | 请求     | axios                                          | 1.20.0                  |
 | 状态     | zustand                                        | 5.0.15                  |
@@ -59,6 +59,7 @@ npm run dev
 | 目录          | 职责                                           |
 | ------------- | ---------------------------------------------- |
 | `src/pages`   | 路由页面（登录、订单列表、新建订单、404）      |
+| `src/router`  | 路由表与路由守卫（登录校验、回跳地址白名单）   |
 | `src/layouts` | 后台布局（菜单、顶栏、面包屑）                 |
 | `src/api`     | axios 实例、拦截器与接口函数                   |
 | `src/mock`    | 内存模拟服务与 axios adapter，页面不得直接引用 |
@@ -84,6 +85,34 @@ npm run test:e2e      # Playwright，自动在 5174 端口启动开发服务
 
 - 订单数据只保存在浏览器内存中。**刷新页面会把订单恢复为初始数据**，新建、续卡、撤单的结果随之丢失；登录信息保存在 localStorage，刷新后仍保留。
 - 模拟服务仅用于演示前端设计与接口边界，不代表真实的服务端权限控制、持久化或财务账本。
+
+## 接口契约
+
+所有请求以 `/api` 为前缀，由 axios 自定义 adapter 交给内存模拟服务处理。除登录外均需 `Authorization: Bearer <token>`。写操作需 `Idempotency-Key` 请求头。
+
+| 接口                          | 请求                                                                                           | 成功响应                                                     |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `POST /auth/login`            | `{ username, password }`                                                                       | `{ token, username }`                                        |
+| `GET /orders`                 | 查询参数 `tab, orderNo, memberName, page, pageSize`                                            | `{ items, total, page, pageSize }`，`total` 为分页前的匹配数 |
+| `POST /orders`                | `{ memberName, phone, cardYears, remark }`                                                     | 新建的订单                                                   |
+| `POST /orders/renew`          | `{ orders: [{ id, version }], years }`                                                         | `{ orders, unitPrice, totalPrice }`                          |
+| `POST /orders/cancel`         | `{ orders: [{ id, version }] }`                                                                | `{ orders }`                                                 |
+| `POST /orders/export-preview` | `{ scope: 'filtered', filters: { tab, orderNo, memberName } }` 或 `{ scope: 'selected', ids }` | `{ items, excluded: [{ id, orderNo, reason }] }`             |
+| `GET /operation-logs`         | —                                                                                              | `{ items }`，仅供验证与调试                                  |
+
+错误响应体统一为 `{ code, message, fieldErrors?, invalidOrders? }`，`invalidOrders` 每项为 `{ id, orderNo, reason }`（订单不存在时 `orderNo` 为 `null`）。定义见 `src/api/errors.js`。
+
+| HTTP | `code`                 | 场景                                 | 页面处理（`parseApiError` 的 `kind`）                    |
+| ---- | ---------------------- | ------------------------------------ | -------------------------------------------------------- |
+| 400  | `VALIDATION_ERROR`     | 参数错误；表单错误附带 `fieldErrors` | 有 `fieldErrors` → `field`，显示在字段下；否则 `general` |
+| 400  | `INVALID_ORDERS`       | 批量操作含不合格或不存在的订单       | `batch`，列出订单号与原因                                |
+| 401  | `UNAUTHORIZED`         | 未登录或 token 无效                  | `unauthorized`，走统一退出流程                           |
+| 404  | `NOT_FOUND`            | 接口不存在                           | `general`                                                |
+| 409  | `VERSION_CONFLICT`     | 订单版本已变化，附带 `invalidOrders` | `batch`                                                  |
+| 409  | `IDEMPOTENCY_CONFLICT` | 同一幂等键对应不同参数               | `general`                                                |
+| 500  | `INTERNAL_ERROR`       | 模拟服务错误                         | `general`                                                |
+
+请求被取消时为 `cancelled`，不提示；无响应的网络错误为 `general`。只有 `general` 由请求层统一提示，其余由页面展示，避免重复提示。
 
 ## 需求理解与业务决策
 
