@@ -36,3 +36,16 @@ export const renewOrders = (body, { idempotencyKey }) =>
       headers: { 'Idempotency-Key': idempotencyKey },
     })
     .then((res) => res.data)
+
+/**
+ * 批量撤单
+ * @param {{ orders: { id: string, version: number }[] }} body
+ * @param {{ idempotencyKey: string }} options
+ * @returns {Promise<{ orders: import('../domain/orderRules').Order[] }>}
+ */
+export const cancelOrders = (body, { idempotencyKey }) =>
+  http
+    .post('/orders/cancel', body, {
+      headers: { 'Idempotency-Key': idempotencyKey },
+    })
+    .then((res) => res.data)
