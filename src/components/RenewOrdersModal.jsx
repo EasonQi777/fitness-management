@@ -1,5 +1,4 @@
 import {
-  Alert,
   Descriptions,
   Form,
   InputNumber,
@@ -9,6 +8,7 @@ import {
 } from 'antd'
 import { useRef, useState } from 'react'
 import { parseApiError } from '../api/errors'
+import InvalidOrdersAlert from './InvalidOrdersAlert'
 import { renewOrders } from '../api/orders'
 import {
   calcRenewPrice,
@@ -165,23 +165,7 @@ export default function RenewOrdersModal({ orders, onCancel, onSuccess }) {
       <div aria-live="polite" data-testid="renew-fees">
         <Fees years={years} count={orders.length} />
       </div>
-      {batchError && (
-        <Alert
-          type="error"
-          showIcon
-          className="mt-4"
-          message={batchError.message}
-          description={
-            <ul className="m-0 pl-5">
-              {batchError.invalidOrders.map((o) => (
-                <li key={o.id}>
-                  {o.orderNo ?? o.id}：{o.reason}
-                </li>
-              ))}
-            </ul>
-          }
-        />
-      )}
+      <InvalidOrdersAlert error={batchError} />
     </Modal>
   )
 }

@@ -685,28 +685,32 @@ describe('续卡', () => {
     expect(batchButton()).toBeDisabled()
   })
 
-  test('勾选了待审核订单：列出不可续卡的订单，不打开续卡弹窗、不发送请求', async () => {
-    await openOrders()
-    await toggle('范思远') // 待审核
-    await clickTab('已到期')
+  test('勾选中有待审核订单：“批量续卡”不可用，提示并列出该订单；取消勾选后恢复', async () => {
+    await openOrders('/orders?tab=expired')
     await toggle('王建国')
-    await userEvent.click(batchButton())
+    expect(batchButton()).toBeEnabled()
 
-    const dialog = await screen.findByRole('dialog', {
-      name: '已选订单中有 1 笔不可续卡',
-    })
+    await clickTab('全部')
+    await toggle('范思远') // 待审核
+    expect(batchButton()).toBeDisabled()
     expect(
-      within(dialog).getByText('FM20261014001（范思远，待审核）'),
+      screen.getByText('已选中有 1 笔不是已到期订单，不能批量续卡'),
     ).toBeInTheDocument()
-    expect(within(dialog).queryByText(/王建国/)).toBeNull()
+    await userEvent.hover(batchButton().parentElement)
+    expect(
+      await screen.findByText(
+        '仅已到期订单可续卡，请移除：FM20261014001（范思远，待审核）',
+      ),
+    ).toBeInTheDocument()
+
+    await userEvent.click(batchButton())
     expect(screen.queryByLabelText('续卡年限')).not.toBeInTheDocument()
     expect(renewRequests).toBe(0)
 
-    await userEvent.click(
-      within(dialog).getByRole('button', { name: '知道了' }),
-    )
-    expect(selectedCount()).toBe(2)
-    expect(totalText()).toBe('共 6 条')
+    await toggle('范思远')
+    expect(batchButton()).toBeEnabled()
+    expect(screen.queryByText(/不能批量续卡/)).not.toBeInTheDocument()
+    expect(selectedCount()).toBe(1)
   })
 
   test('勾选后店长先续了李秀英：接口拒绝，弹窗列出原因，勾选与年限都保留', async () => {
@@ -801,6 +805,161 @@ describe('续卡', () => {
       expect(renewRequests).toBe(1)
       await clickTab('进行中')
       expect(totalText()).toBe('共 27 条')
+    })
+  })
+})
+
+describe('批量撤单', () => {
+  // 店长在另一台电脑上操作
+  const manager = axios.create({
+    baseURL: '/api',
+    adapter: createMockAdapter({ delay: 0 }),
+    headers: { Authorization: `Bearer ${tokenFor(MANAGER)}` },
+  })
+
+  let cancelRequests
+  beforeEach(() => {
+    cancelRequests = 0
+    http.defaults.adapter = (config) => {
+      if (config.url === '/orders/cancel') cancelRequests++
+      return realAdapter(config)
+    }
+  })
+  afterEach(() => message.destroy())
+
+  const rowOf = (name) => rows().find((tr) => cellOf(tr, '会员姓名') === name)
+  const toggle = (name) =>
+    userEvent.click(within(rowOf(name)).getByRole('checkbox'))
+  const selectedCount = () =>
+    Number(document.querySelector('[aria-live] strong').textContent)
+  const goToPage = (n) =>
+    andQuery(() => userEvent.click(screen.getByTitle(String(n))))
+  const cancelButton = () => screen.getByRole('button', { name: '批量撤单' })
+  const confirmDialog = () =>
+    screen.getByRole('button', { name: /确认撤单/ }).closest('.ant-modal')
+  const listedOrderNos = () =>
+    [...confirmDialog().querySelectorAll('tr.ant-table-row')].map(
+      (tr) => tr.querySelector('td').textContent,
+    )
+  /** 确认撤单，等待弹窗关闭与列表刷新完成 */
+  async function confirmAndWait() {
+    await userEvent.click(screen.getByRole('button', { name: /确认撤单/ }))
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByRole('button', { name: /确认撤单/ }),
+        ).not.toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+    await settled()
+  }
+
+  test('未勾选订单时“批量撤单”不可用', async () => {
+    await openOrders()
+    expect(cancelButton()).toBeDisabled()
+  })
+
+  test('勾选中有待审核订单：“批量撤单”不可用并列出该订单；取消勾选后恢复', async () => {
+    await openOrders('/orders?tab=in_progress')
+    await toggle('谢婉婷') // 待制卡
+    expect(cancelButton()).toBeEnabled()
+
+    await toggle('范思远') // 待审核
+    expect(cancelButton()).toBeDisabled()
+    expect(
+      screen.getByText('已选中有 1 笔不是待制卡或待寄卡订单，不能批量撤单'),
+    ).toBeInTheDocument()
+    await userEvent.hover(cancelButton().parentElement)
+    expect(
+      await screen.findByText(
+        '仅待制卡、待寄卡订单可撤单，请移除：FM20261014001（范思远，待审核）',
+      ),
+    ).toBeInTheDocument()
+
+    await toggle('范思远')
+    expect(cancelButton()).toBeEnabled()
+  })
+
+  test('确认框中点“再想想”：不发送请求，勾选保留', async () => {
+    await openOrders('/orders?tab=in_progress')
+    await toggle('谢婉婷')
+    await toggle('彭飞')
+    await userEvent.click(cancelButton())
+    expect(listedOrderNos()).toEqual(['FM20261008001', 'FM20261007001'])
+
+    await userEvent.click(screen.getByRole('button', { name: /再想想/ }))
+    expect(cancelRequests).toBe(0)
+    expect(selectedCount()).toBe(2)
+    expect(totalText()).toBe('共 18 条')
+  })
+
+  test('店长已先撤了彭飞：整批被拒，列出原因，勾选保留，谢婉婷仍为待制卡', async () => {
+    await openOrders('/orders?tab=in_progress')
+    await toggle('谢婉婷')
+    await toggle('彭飞')
+    const [peng] = (
+      await manager.get('/orders', { params: { memberName: '彭飞' } })
+    ).data.items
+    await act(() =>
+      manager.post(
+        '/orders/cancel',
+        { orders: [{ id: peng.id, version: peng.version }] },
+        {
+          headers: {
+            'Idempotency-Key': '8c2f5a17-e940-4b6d-a3c1-7d0e9b4f2a68',
+          },
+        },
+      ),
+    )
+
+    await userEvent.click(cancelButton())
+    await userEvent.click(screen.getByRole('button', { name: /确认撤单/ }))
+    expect(
+      await within(confirmDialog()).findByText(
+        'FM20261007001：订单已被他人修改，请刷新后重试',
+      ),
+    ).toBeInTheDocument()
+    expect(selectedCount()).toBe(2)
+    const [xie] = (
+      await manager.get('/orders', { params: { memberName: '谢婉婷' } })
+    ).data.items
+    expect(xie.status).toBe('pending_card')
+  })
+
+  describe('批量测试数据集', () => {
+    beforeEach(() => resetMockDb(createBulkTestOrders()))
+
+    test('跨两页勾选全部 13 笔待制卡 / 待寄卡订单：确认框列出全部，撤单后进行中只剩待审核', async () => {
+      await openOrders('/orders?tab=in_progress')
+      const picked = []
+      const tickCancellable = async () => {
+        for (const tr of rows())
+          if (['待制卡', '待寄卡'].includes(cellOf(tr, '状态'))) {
+            picked.push(cellOf(tr, '订单号'))
+            await userEvent.click(within(tr).getByRole('checkbox'))
+          }
+      }
+      await tickCancellable()
+      await goToPage(2)
+      await tickCancellable()
+      expect(selectedCount()).toBe(13)
+
+      await userEvent.click(cancelButton())
+      expect(
+        within(confirmDialog()).getByText('确认撤销以下 13 笔订单？'),
+      ).toBeInTheDocument()
+      expect(listedOrderNos()).toEqual(picked)
+
+      await confirmAndWait()
+      expect(cancelRequests).toBe(1)
+      expect(selectedCount()).toBe(0)
+      expect(cancelButton()).toBeDisabled()
+      // 刷新后进行中只剩 2 笔（停留在已无数据的第 2 页，回到有效页由 T36 处理）
+      expect(totalText()).toBe('共 2 条')
+      await clickTab('已取消')
+      expect(totalText()).toBe('共 14 条')
+      await clickTab('进行中')
+      expect(statuses()).toEqual(['待审核', '待审核'])
     })
   })
 })

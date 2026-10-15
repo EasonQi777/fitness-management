@@ -3,23 +3,66 @@ import {
   Empty,
   Form,
   Input,
-  Modal,
   Result,
   Space,
   Tabs,
   Tooltip,
+  Typography,
 } from 'antd'
 import { useEffect, useState } from 'react'
+import CancelOrdersModal from '../components/CancelOrdersModal'
 import OrderTable from '../components/OrderTable'
 import RenewOrdersModal from '../components/RenewOrdersModal'
 import SelectedOrdersDrawer from '../components/SelectedOrdersDrawer'
 import { DEFAULT_QUERY, PAGE_SIZES } from '../domain/orderQuery'
-import { canRenew, ORDER_STATUS, ORDER_TABS } from '../domain/orderStatus'
+import {
+  canCancel,
+  canRenew,
+  ORDER_STATUS,
+  ORDER_TABS,
+} from '../domain/orderStatus'
 import { useOrderQuery } from '../hooks/useOrderQuery'
 import { useOrderSelection } from '../hooks/useOrderSelection'
 import { useOrders } from '../hooks/useOrders'
 
 const TAB_ITEMS = ORDER_TABS.map(({ key, label }) => ({ key, label }))
+
+const summaryOf = (o) =>
+  `${o.orderNo}（${o.memberName}，${ORDER_STATUS[o.status]?.label ?? o.status}）`
+
+/**
+ * 批量操作按钮：未勾选或勾选中有不合格订单时禁用，并说明原因、列出需移除的订单
+ * @param {{ label: string, count: number, blocked: { orderNo: string, memberName: string, status: string }[],
+ *   rule: string, blockedAs: string, onClick: () => void } & import('antd').ButtonProps} props
+ */
+function BatchButton({ label, count, blocked, rule, blockedAs, ...button }) {
+  return (
+    <>
+      <Tooltip
+        title={
+          blocked.length > 0 &&
+          `${rule}，请移除：${blocked.map(summaryOf).join('、')}`
+        }
+      >
+        {/* 禁用的按钮不触发悬停，由外层 span 接收，提示才能显示 */}
+        <span>
+          <Button
+            size="small"
+            {...button}
+            disabled={count === 0 || blocked.length > 0}
+          >
+            {label}
+          </Button>
+        </span>
+      </Tooltip>
+      {blocked.length > 0 && (
+        <Typography.Text type="warning">
+          已选中有 {blocked.length} 笔{blockedAs}，不能{label}
+        </Typography.Text>
+      )}
+    </>
+  )
+}
 
 export default function OrdersPage() {
   const [query, setQuery] = useOrderQuery()
@@ -30,7 +73,8 @@ export default function OrdersPage() {
   const [viewingSelected, setViewingSelected] = useState(false)
   // 正在续卡的订单：{ orders, batch }，null 表示弹窗关闭
   const [renewing, setRenewing] = useState(null)
-  const [modal, modalHolder] = Modal.useModal()
+  // 待确认撤单的订单，null 表示弹窗关闭
+  const [cancelling, setCancelling] = useState(null)
 
   // 输入框是草稿；已提交条件变化（含浏览器前进后退）时用其回填
   useEffect(() => {
@@ -50,35 +94,23 @@ export default function OrdersPage() {
     setQuery({ orderNo: '', memberName: '' })
   }
 
-  function renewSelected() {
-    // 先按勾选时的状态预检，不合格时不打开弹窗、不发送请求；接口仍做最终校验
-    const blocked = selection.selectedOrders.filter((o) => !canRenew(o.status))
-    if (blocked.length) {
-      modal.warning({
-        title: `已选订单中有 ${blocked.length} 笔不可续卡`,
-        okText: '知道了',
-        content: (
-          <>
-            <p>仅“已到期”订单可续卡，请在“查看已选”中移除以下订单后重试：</p>
-            <ul className="m-0 pl-5">
-              {blocked.map((o) => (
-                <li key={o.id}>
-                  {o.orderNo}（{o.memberName}，
-                  {ORDER_STATUS[o.status]?.label ?? o.status}）
-                </li>
-              ))}
-            </ul>
-          </>
-        ),
-      })
-      return
-    }
-    setRenewing({ orders: selection.selectedOrders, batch: true })
-  }
+  // 按勾选时的状态预检：含不合格订单时禁用对应批量操作；接口仍做最终校验
+  const notRenewable = selection.selectedOrders.filter(
+    (o) => !canRenew(o.status),
+  )
+  const notCancellable = selection.selectedOrders.filter(
+    (o) => !canCancel(o.status),
+  )
 
   function renewed() {
     if (renewing.batch) selection.clear()
     setRenewing(null)
+    refresh()
+  }
+
+  function cancelled() {
+    selection.clear()
+    setCancelling(null)
     refresh()
   }
 
@@ -139,15 +171,35 @@ export default function OrdersPage() {
         >
           清空选择
         </Button>
-        <Button
-          size="small"
+        <BatchButton
+          label="批量续卡"
           type="primary"
-          disabled={selection.count === 0}
-          onClick={renewSelected}
-        >
-          批量续卡
-        </Button>
+          count={selection.count}
+          blocked={notRenewable}
+          rule="仅已到期订单可续卡"
+          blockedAs="不是已到期订单"
+          onClick={() =>
+            setRenewing({ orders: selection.selectedOrders, batch: true })
+          }
+        />
+        <BatchButton
+          label="批量撤单"
+          danger
+          count={selection.count}
+          blocked={notCancellable}
+          rule="仅待制卡、待寄卡订单可撤单"
+          blockedAs="不是待制卡或待寄卡订单"
+          onClick={() => setCancelling(selection.selectedOrders)}
+        />
       </div>
+
+      {cancelling && (
+        <CancelOrdersModal
+          orders={cancelling}
+          onCancel={() => setCancelling(null)}
+          onSuccess={cancelled}
+        />
+      )}
 
       {renewing && (
         <RenewOrdersModal
@@ -156,7 +208,6 @@ export default function OrdersPage() {
           onSuccess={renewed}
         />
       )}
-      {modalHolder}
 
       <SelectedOrdersDrawer
         open={viewingSelected}

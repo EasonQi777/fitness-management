@@ -8,7 +8,12 @@ import {
   validateOrderInput,
   validateYears,
 } from '../domain/orderRules'
-import { ORDER_STATUS, ORDER_TABS, canRenew } from '../domain/orderStatus'
+import {
+  ORDER_STATUS,
+  ORDER_TABS,
+  canCancel,
+  canRenew,
+} from '../domain/orderStatus'
 import { db } from './db'
 import { MockHttpError } from './httpError'
 import { idempotent, resolveOrders, saveOrders } from './writes'
@@ -124,6 +129,8 @@ export const createOrder = idempotent('POST /orders', ({ body }) => {
   return order
 })
 
+const statusLabel = (o) => ORDER_STATUS[o.status]?.label ?? o.status
+
 /**
  * POST /orders/renew：续卡（单条与批量共用）。
  * 仅已到期订单可续；累计年限增加、状态改为待审核、版本加 1；
@@ -141,7 +148,7 @@ export const renewOrders = idempotent('POST /orders/renew', ({ body }) => {
     check: (o) =>
       canRenew(o.status)
         ? null
-        : `订单状态为「${ORDER_STATUS[o.status]?.label ?? o.status}」，仅已到期订单可续卡`,
+        : `订单状态为「${statusLabel(o)}」，仅已到期订单可续卡`,
   })
   const updated = orders.map((o) => ({
     ...o,
@@ -155,4 +162,24 @@ export const renewOrders = idempotent('POST /orders/renew', ({ body }) => {
     unitPrice: calcRenewPrice(years),
     totalPrice: calcRenewTotal(years, updated.length),
   }
+})
+
+/**
+ * POST /orders/cancel：撤单（批量原子操作）。
+ * 仅待制卡、待寄卡订单可撤；状态改为已取消、版本加 1；金额、年限与创建时间不变。
+ */
+export const cancelOrders = idempotent('POST /orders/cancel', ({ body }) => {
+  const orders = resolveOrders(body?.orders, {
+    check: (o) =>
+      canCancel(o.status)
+        ? null
+        : `订单状态为「${statusLabel(o)}」，仅待制卡、待寄卡订单可撤单`,
+  })
+  const updated = orders.map((o) => ({
+    ...o,
+    status: 'cancelled',
+    version: o.version + 1,
+  }))
+  saveOrders(updated)
+  return { orders: updated }
 })
