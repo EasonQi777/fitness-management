@@ -7,6 +7,7 @@ import {
   createOrder,
   listOperationLogs,
   listOrders,
+  previewExport,
   renewOrders,
 } from './orders'
 
@@ -65,6 +66,7 @@ const routes = {
   'POST /orders': { handler: createOrder },
   'POST /orders/renew': { handler: renewOrders },
   'POST /orders/cancel': { handler: cancelOrders },
+  'POST /orders/export-preview': { handler: previewExport },
   'GET /operation-logs': { handler: listOperationLogs },
 }
 

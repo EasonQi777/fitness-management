@@ -12,6 +12,7 @@ import {
   ORDER_STATUS,
   ORDER_TABS,
   canCancel,
+  canExport,
   canRenew,
 } from '../domain/orderStatus'
 import { db } from './db'
@@ -50,25 +51,34 @@ const byNewest = (a, b) =>
   b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)
 
 /**
- * GET /orders：筛选 → 排序 → 分页。所有条件为 AND 关系。
- * 页码超出范围时返回空列表与真实总数，由页面回到最后有效页。
+ * 按筛选条件匹配订单并排序（列表查询与导出预览共用）。所有条件为 AND 关系。
+ * @param {{ tab: (typeof ORDER_TABS)[number], orderNo: string | null, memberName: string | null }} filters
+ *   orderNo、memberName 已去首尾空格，null 表示不过滤
  */
-export function listOrders({ query }) {
-  const tab = parseTab(param(query, 'tab'))
-  const orderNo = param(query, 'orderNo')
-  const memberName = param(query, 'memberName')?.toLowerCase() ?? null
-  const page = parsePage(param(query, 'page'))
-  const pageSize = parsePageSize(param(query, 'pageSize'))
-
-  const matched = db.orders
+function matchOrders({ tab, orderNo, memberName }) {
+  const name = memberName?.toLowerCase() ?? null
+  return db.orders
     .filter(
       (o) =>
         (tab.statuses.length === 0 || tab.statuses.includes(o.status)) &&
         (orderNo === null || o.orderNo === orderNo) &&
-        (memberName === null ||
-          o.memberName.toLowerCase().includes(memberName)),
+        (name === null || o.memberName.toLowerCase().includes(name)),
     )
     .sort(byNewest)
+}
+
+/**
+ * GET /orders：筛选 → 排序 → 分页。
+ * 页码超出范围时返回空列表与真实总数，由页面回到最后有效页。
+ */
+export function listOrders({ query }) {
+  const matched = matchOrders({
+    tab: parseTab(param(query, 'tab')),
+    orderNo: param(query, 'orderNo'),
+    memberName: param(query, 'memberName'),
+  })
+  const page = parsePage(param(query, 'page'))
+  const pageSize = parsePageSize(param(query, 'pageSize'))
 
   const start = (page - 1) * pageSize
   return {
@@ -226,3 +236,70 @@ export const cancelOrders = idempotent(
     return { orders: updated }
   },
 )
+
+// 导出只包含对账所需字段，不含手机号与备注
+const exportRow = ({
+  id,
+  orderNo,
+  memberName,
+  cardYears,
+  amount,
+  status,
+  createdAt,
+}) => ({ id, orderNo, memberName, cardYears, amount, status, createdAt })
+
+/** 导出筛选条件中的文本：缺失或空白视为不过滤，非字符串视为参数错误 */
+function filterText(value, label) {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') throw invalid(`${label}格式不正确`)
+  return value.trim() || null
+}
+
+function selectedOrders(ids) {
+  if (!Array.isArray(ids) || ids.length === 0)
+    throw invalid('请至少勾选一笔订单')
+  if (!ids.every((id) => typeof id === 'string' && id !== ''))
+    throw invalid('订单 ID 格式不正确')
+  const duplicated = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))]
+  if (duplicated.length) throw invalid(`订单重复提交：${duplicated.join('、')}`)
+  const byId = new Map(db.orders.map((o) => [o.id, o]))
+  return ids.map((id) => byId.get(id) ?? { id, missing: true })
+}
+
+/**
+ * POST /orders/export-preview：导出前预览，由服务端最终判断导出范围与资格。
+ * - scope = 'filtered'：按已提交的筛选条件匹配全部订单，不受分页限制
+ * - scope = 'selected'：按勾选的订单 ID（可跨页、跨状态）
+ * 仅已完成、已到期订单可导出，其余列入 excluded 并说明原因；不存在的 ID 也列入 excluded。
+ * items 与列表排序一致（创建时间降序），只含导出字段。只读，不需要幂等键。
+ */
+export function previewExport({ body }) {
+  let candidates
+  if (body?.scope === 'filtered') {
+    const filters = body.filters ?? {}
+    candidates = matchOrders({
+      tab: parseTab(filterText(filters.tab, '状态分组')),
+      orderNo: filterText(filters.orderNo, '订单号'),
+      memberName: filterText(filters.memberName, '会员姓名'),
+    })
+  } else if (body?.scope === 'selected') {
+    candidates = selectedOrders(body.ids)
+  } else throw invalid('导出范围只能是 filtered 或 selected')
+
+  const found = candidates.filter((o) => !o.missing).sort(byNewest)
+  return {
+    items: found.filter((o) => canExport(o.status)).map(exportRow),
+    excluded: [
+      ...found
+        .filter((o) => !canExport(o.status))
+        .map((o) => ({
+          id: o.id,
+          orderNo: o.orderNo,
+          reason: `订单状态为「${statusLabel(o)}」，仅已完成、已到期订单可导出`,
+        })),
+      ...candidates
+        .filter((o) => o.missing)
+        .map((o) => ({ id: o.id, orderNo: null, reason: '订单不存在' })),
+    ],
+  }
+}
