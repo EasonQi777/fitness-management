@@ -801,6 +801,8 @@ describe('续卡', () => {
 
       expect(selectedCount()).toBe(0)
       expect(batchButton()).toBeDisabled()
+      // 第 2 页的订单都已续卡，自动回到第 1 页，剩余 3 笔
+      await waitFor(() => expect(rows()).toHaveLength(3))
       expect(totalText()).toBe('共 3 条')
       expect(renewRequests).toBe(1)
       await clickTab('进行中')
@@ -954,12 +956,105 @@ describe('批量撤单', () => {
       expect(cancelRequests).toBe(1)
       expect(selectedCount()).toBe(0)
       expect(cancelButton()).toBeDisabled()
-      // 刷新后进行中只剩 2 笔（停留在已无数据的第 2 页，回到有效页由 T36 处理）
+      // 刷新后进行中只剩 2 笔：第 2 页已无数据，自动回到第 1 页
+      await waitFor(() => expect(rows()).toHaveLength(2))
       expect(totalText()).toBe('共 2 条')
+      expect(statuses()).toEqual(['待审核', '待审核'])
       await clickTab('已取消')
       expect(totalText()).toBe('共 14 条')
-      await clickTab('进行中')
-      expect(statuses()).toEqual(['待审核', '待审核'])
     })
+  })
+})
+
+describe('写入后的列表', () => {
+  // 记录写请求；listDown = true 时下一次列表查询因网络中断失败
+  let writeRequests
+  let listDown
+  beforeEach(() => {
+    writeRequests = 0
+    listDown = false
+    http.defaults.adapter = (config) => {
+      if (config.method === 'post') writeRequests++
+      if (config.url === '/orders' && config.method === 'get' && listDown) {
+        listDown = false
+        return Promise.reject(networkDown(config))
+      }
+      return realAdapter(config)
+    }
+  })
+  afterEach(() => message.destroy())
+
+  const rowOf = (name) => rows().find((tr) => cellOf(tr, '会员姓名') === name)
+  const selectedCount = () =>
+    Number(document.querySelector('[aria-live] strong').textContent)
+  const confirmRenew = () =>
+    userEvent.click(screen.getByRole('button', { name: /确认续卡/ }))
+
+  describe('批量测试数据集', () => {
+    beforeEach(() => resetMockDb(createBulkTestOrders()))
+
+    test('已到期第 2 页的 5 笔全部续卡后，自动回到第 1 页，后退不会回到空页', async () => {
+      const { router, search } = await openOrders('/orders?tab=expired&page=2')
+      expect(rows()).toHaveLength(5)
+      await userEvent.click(document.querySelector('thead .ant-checkbox-input'))
+      expect(selectedCount()).toBe(5)
+
+      await userEvent.click(screen.getByRole('button', { name: '批量续卡' }))
+      await confirmRenew()
+
+      await waitFor(() => expect(search()).toBe('?tab=expired'), {
+        timeout: 3000,
+      })
+      await waitFor(() => expect(rows()).toHaveLength(10), { timeout: 3000 })
+      expect(totalText()).toBe('共 10 条')
+      expect(
+        document.querySelector('.ant-pagination-item-active').textContent,
+      ).toBe('1')
+      // 纠正页码替换了当前历史记录
+      expect(router.state.historyAction).toBe('REPLACE')
+    })
+  })
+
+  test('续卡成功但列表刷新失败：说明续卡已成功，重新加载只查询列表、不再续卡', async () => {
+    await openOrders('/orders?tab=expired')
+    await userEvent.click(
+      within(rowOf('王建国')).getByRole('button', { name: /续\s*卡/ }),
+    )
+    listDown = true
+    await confirmRenew()
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 3000 })
+    expect(alert).toHaveTextContent('1 笔订单续卡已成功，但订单列表刷新失败')
+    expect(alert).toHaveTextContent(
+      '网络异常，请稍后重试。点击“重新加载列表”只会重新查询，不会重复执行操作。',
+    )
+    expect(writeRequests).toBe(1)
+
+    await andQuery(() =>
+      userEvent.click(
+        within(alert).getByRole('button', { name: '重新加载列表' }),
+      ),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(names()).not.toContain('王建国')
+    expect(totalText()).toBe('共 5 条')
+    expect(writeRequests).toBe(1)
+  })
+
+  test('写入成功后切换到其他 Tab 查询失败：按普通加载失败提示', async () => {
+    await openOrders('/orders?tab=expired')
+    await userEvent.click(
+      within(rowOf('王建国')).getByRole('button', { name: /续\s*卡/ }),
+    )
+    await confirmRenew()
+    await waitFor(() => expect(names()).not.toContain('王建国'), {
+      timeout: 3000,
+    })
+    await settled()
+
+    listDown = true
+    await clickTab('全部')
+    expect(screen.getByRole('alert')).toHaveTextContent('订单加载失败')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('续卡已成功')
   })
 })

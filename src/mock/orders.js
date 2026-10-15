@@ -99,7 +99,7 @@ function nextOrderNo(createdAt) {
  * POST /orders：新建订单。
  * 只接受姓名、手机号、年限、备注；金额、状态、编号由服务端决定，不信任页面传入的值。
  */
-export const createOrder = idempotent('POST /orders', ({ body }) => {
+export const createOrder = idempotent('POST /orders', ({ body }, { user }) => {
   const input = {
     memberName: body?.memberName,
     phone: body?.phone,
@@ -126,60 +126,103 @@ export const createOrder = idempotent('POST /orders', ({ body }) => {
     version: 1,
   }
   db.orders = [...db.orders, order]
+  writeLogs('create', user, [order], [order])
   return order
 })
 
 const statusLabel = (o) => ORDER_STATUS[o.status]?.label ?? o.status
 
 /**
+ * 记录操作日志：每笔订单一条。在订单写入后同步调用，与写入同时生效；
+ * 校验失败的请求走不到这里，幂等重放不会再次执行处理器，因此都不会产生日志。
+ * @param {'create' | 'renew' | 'cancel'} action
+ * @param {string} operator 操作员工账号
+ * @param {import('../domain/orderRules').Order[]} before 修改前（新建时与 after 相同）
+ * @param {import('../domain/orderRules').Order[]} after 修改后
+ * @param {{ renewYears: number, renewFee: number }} [extra] 续卡年限与单笔续卡费用
+ */
+function writeLogs(action, operator, before, after, extra) {
+  const operatedAt = new Date().toISOString()
+  db.logs = [
+    ...db.logs,
+    ...after.map((o, i) => ({
+      id: `log-${db.logs.length + i + 1}`,
+      action,
+      operator,
+      operatedAt,
+      orderId: o.id,
+      orderNo: o.orderNo,
+      fromStatus: action === 'create' ? null : before[i].status,
+      toStatus: o.status,
+      ...extra,
+    })),
+  ]
+}
+
+/** GET /operation-logs：操作日志（仅供验证与调试，不建设页面） */
+export const listOperationLogs = () => ({ items: structuredClone(db.logs) })
+
+/**
  * POST /orders/renew：续卡（单条与批量共用）。
  * 仅已到期订单可续；累计年限增加、状态改为待审核、版本加 1；
- * 金额与创建时间保留原值，续卡费用只在响应中返回（T36 写入操作日志）。
+ * 金额与创建时间保留原值，续卡费用写入操作日志。
  */
-export const renewOrders = idempotent('POST /orders/renew', ({ body }) => {
-  const years = body?.years
-  const yearsError = validateYears(years)
-  if (yearsError)
-    throw new MockHttpError('VALIDATION_ERROR', yearsError, {
-      fieldErrors: { years: yearsError },
-    })
+export const renewOrders = idempotent(
+  'POST /orders/renew',
+  ({ body }, { user }) => {
+    const years = body?.years
+    const yearsError = validateYears(years)
+    if (yearsError)
+      throw new MockHttpError('VALIDATION_ERROR', yearsError, {
+        fieldErrors: { years: yearsError },
+      })
 
-  const orders = resolveOrders(body.orders, {
-    check: (o) =>
-      canRenew(o.status)
-        ? null
-        : `订单状态为「${statusLabel(o)}」，仅已到期订单可续卡`,
-  })
-  const updated = orders.map((o) => ({
-    ...o,
-    cardYears: o.cardYears + years,
-    status: 'pending_review',
-    version: o.version + 1,
-  }))
-  saveOrders(updated)
-  return {
-    orders: updated,
-    unitPrice: calcRenewPrice(years),
-    totalPrice: calcRenewTotal(years, updated.length),
-  }
-})
+    const orders = resolveOrders(body.orders, {
+      check: (o) =>
+        canRenew(o.status)
+          ? null
+          : `订单状态为「${statusLabel(o)}」，仅已到期订单可续卡`,
+    })
+    const updated = orders.map((o) => ({
+      ...o,
+      cardYears: o.cardYears + years,
+      status: 'pending_review',
+      version: o.version + 1,
+    }))
+    saveOrders(updated)
+    const unitPrice = calcRenewPrice(years)
+    writeLogs('renew', user, orders, updated, {
+      renewYears: years,
+      renewFee: unitPrice,
+    })
+    return {
+      orders: updated,
+      unitPrice,
+      totalPrice: calcRenewTotal(years, updated.length),
+    }
+  },
+)
 
 /**
  * POST /orders/cancel：撤单（批量原子操作）。
  * 仅待制卡、待寄卡订单可撤；状态改为已取消、版本加 1；金额、年限与创建时间不变。
  */
-export const cancelOrders = idempotent('POST /orders/cancel', ({ body }) => {
-  const orders = resolveOrders(body?.orders, {
-    check: (o) =>
-      canCancel(o.status)
-        ? null
-        : `订单状态为「${statusLabel(o)}」，仅待制卡、待寄卡订单可撤单`,
-  })
-  const updated = orders.map((o) => ({
-    ...o,
-    status: 'cancelled',
-    version: o.version + 1,
-  }))
-  saveOrders(updated)
-  return { orders: updated }
-})
+export const cancelOrders = idempotent(
+  'POST /orders/cancel',
+  ({ body }, { user }) => {
+    const orders = resolveOrders(body?.orders, {
+      check: (o) =>
+        canCancel(o.status)
+          ? null
+          : `订单状态为「${statusLabel(o)}」，仅待制卡、待寄卡订单可撤单`,
+    })
+    const updated = orders.map((o) => ({
+      ...o,
+      status: 'cancelled',
+      version: o.version + 1,
+    }))
+    saveOrders(updated)
+    writeLogs('cancel', user, orders, updated)
+    return { orders: updated }
+  },
+)
