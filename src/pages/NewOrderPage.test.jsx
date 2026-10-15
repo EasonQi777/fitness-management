@@ -1,9 +1,13 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { beforeEach, describe, expect, test } from 'vitest'
+import { message } from 'antd'
+import { AxiosError } from 'axios'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import AppProviders from '../AppProviders'
-import { resetMockDb } from '../mock/db'
+import { createErrorBody } from '../api/errors'
+import { http } from '../api/http'
+import { db, resetMockDb } from '../mock/db'
 import { routes } from '../router/routes'
 import { useAuthStore } from '../store/authStore'
 import { authOf, FRONT_DESK } from '../test/fixtures'
@@ -155,5 +159,187 @@ describe('备注', () => {
     await userEvent.click(remark())
     await userEvent.paste(remarkOf(length))
     await waitFor(() => expect(errorOf(remark())).toBe(error))
+  })
+})
+
+describe('提交', () => {
+  const realAdapter = http.defaults.adapter
+  // 记录每次新建请求的幂等键；可按需让某次请求失败
+  let sentKeys
+  let interceptNext = null
+  beforeEach(() => {
+    sentKeys = []
+    http.defaults.adapter = (config) => {
+      if (config.method === 'post' && config.url === '/orders') {
+        sentKeys.push(config.headers['Idempotency-Key'])
+        const intercept = interceptNext
+        interceptNext = null
+        if (intercept) return intercept(config)
+      }
+      return realAdapter(config)
+    }
+  })
+  afterEach(() => {
+    http.defaults.adapter = realAdapter
+    vi.restoreAllMocks()
+    message.destroy()
+  })
+
+  async function fillZhou(form) {
+    await fill(form.name(), '周雨桐')
+    await fill(form.phone(), '13816527409')
+    await fill(form.years(), '5')
+    await userEvent.type(form.remark(), '朋友推荐，周末到店领卡')
+  }
+  const submitButton = () => screen.getByRole('button', { name: /提交订单/ })
+  const created = () => db.orders.filter((o) => o.phone === '13816527409')
+
+  test('提交成功：提示订单号，进入默认列表第一页，新订单在最前', async () => {
+    const success = vi.spyOn(message, 'success')
+    const form = openForm()
+    await fillZhou(form)
+    await userEvent.click(submitButton())
+
+    await waitFor(() =>
+      expect(form.router.state.location.pathname).toBe('/orders'),
+    )
+    expect(form.router.state.location.search).toBe('')
+    expect(success).toHaveBeenCalledWith(
+      expect.stringMatching(/^订单 FM\d{11} 创建成功$/),
+    )
+    expect(created()).toHaveLength(1)
+    expect(created()[0]).toMatchObject({
+      memberName: '周雨桐',
+      cardYears: 5,
+      amount: 6000,
+      status: 'pending_review',
+      remark: '朋友推荐，周末到店领卡',
+    })
+
+    // 列表加载完成后新订单位于第一行
+    await waitFor(
+      () => {
+        const first = document.querySelector('tr.ant-table-row')
+        expect(first).toHaveTextContent('周雨桐')
+        expect(first).toHaveTextContent('6,000.00')
+        expect(first).toHaveTextContent('待审核')
+      },
+      { timeout: 3000 },
+    )
+  })
+
+  test('提交中显示 loading，连续点击与回车只创建一笔订单', async () => {
+    const form = openForm()
+    await fillZhou(form)
+    await userEvent.click(submitButton())
+    expect(submitButton()).toHaveClass('ant-btn-loading')
+    await userEvent.click(submitButton())
+    await userEvent.type(form.phone(), '{Enter}')
+
+    await waitFor(() =>
+      expect(form.router.state.location.pathname).toBe('/orders'),
+    )
+    expect(created()).toHaveLength(1)
+    expect(sentKeys).toHaveLength(1)
+  })
+
+  test('表单验证未通过时不发送请求', async () => {
+    const form = openForm()
+    await fill(form.name(), '周')
+    await userEvent.click(submitButton())
+    await waitFor(() => expect(errorOf(form.name())).not.toBeNull())
+    expect(sentKeys).toHaveLength(0)
+  })
+
+  test('服务端返回字段错误：显示在对应字段，其余输入保留', async () => {
+    // 后端新增的规则：同一手机号已有进行中的订单
+    interceptNext = (config) =>
+      Promise.reject(
+        new AxiosError('fail', 'ERR_BAD_REQUEST', config, null, {
+          status: 400,
+          data: createErrorBody('VALIDATION_ERROR', '订单信息填写有误', {
+            fieldErrors: { phone: '该手机号已有进行中的订单' },
+          }),
+        }),
+      )
+    const form = openForm()
+    await fillZhou(form)
+    await userEvent.click(submitButton())
+
+    await waitFor(() =>
+      expect(errorOf(form.phone())).toBe('该手机号已有进行中的订单'),
+    )
+    expect(form.router.state.location.pathname).toBe('/orders/new')
+    expect(form.name()).toHaveValue('周雨桐')
+    expect(form.years()).toHaveValue('5')
+    expect(form.remark()).toHaveValue('朋友推荐，周末到店领卡')
+    expect(submitButton()).not.toHaveClass('ant-btn-loading')
+  })
+
+  test('服务异常：只由请求层提示一次，输入全部保留，可再次提交', async () => {
+    const toast = vi.spyOn(message, 'error')
+    interceptNext = (config) =>
+      Promise.reject(
+        new AxiosError('fail', 'ERR_BAD_RESPONSE', config, null, {
+          status: 500,
+          data: createErrorBody('INTERNAL_ERROR', '服务异常，请稍后重试'),
+        }),
+      )
+    const form = openForm()
+    await fillZhou(form)
+    await userEvent.click(submitButton())
+
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1))
+    expect(form.name()).toHaveValue('周雨桐')
+    expect(form.phone()).toHaveValue('13816527409')
+    expect(created()).toHaveLength(0)
+
+    await userEvent.click(submitButton())
+    await waitFor(() =>
+      expect(form.router.state.location.pathname).toBe('/orders'),
+    )
+    expect(created()).toHaveLength(1)
+    expect(toast).toHaveBeenCalledTimes(1)
+  })
+
+  test('订单已创建但响应因网络中断丢失：原样重试复用幂等键，不会重复建单', async () => {
+    interceptNext = async (config) => {
+      await realAdapter(config) // 服务端已处理成功
+      throw new AxiosError('Network Error', 'ERR_NETWORK', config)
+    }
+    const form = openForm()
+    await fillZhou(form)
+    await userEvent.click(submitButton())
+    await waitFor(() =>
+      expect(submitButton()).not.toHaveClass('ant-btn-loading'),
+    )
+    expect(created()).toHaveLength(1) // 服务端已有订单，页面却不知道
+
+    await userEvent.click(submitButton()) // 员工再次点击提交
+    await waitFor(() =>
+      expect(form.router.state.location.pathname).toBe('/orders'),
+    )
+    expect(sentKeys).toHaveLength(2)
+    expect(sentKeys[1]).toBe(sentKeys[0])
+    expect(created()).toHaveLength(1)
+  })
+
+  test('失败后修改了表单再提交：使用新的幂等键', async () => {
+    interceptNext = (config) =>
+      Promise.reject(new AxiosError('Network Error', 'ERR_NETWORK', config))
+    const form = openForm()
+    await fillZhou(form)
+    await userEvent.click(submitButton())
+    await waitFor(() =>
+      expect(submitButton()).not.toHaveClass('ant-btn-loading'),
+    )
+
+    await fill(form.years(), '3') // 会员改为办 3 年卡
+    await userEvent.click(submitButton())
+    await waitFor(() =>
+      expect(form.router.state.location.pathname).toBe('/orders'),
+    )
+    expect(sentKeys[1]).not.toBe(sentKeys[0])
+    expect(created()).toEqual([expect.objectContaining({ cardYears: 3 })])
   })
 })
