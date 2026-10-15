@@ -55,12 +55,17 @@ const ROWS = [
 const toIso = (shanghaiTime) =>
   new Date(`${shanghaiTime.replace(' ', 'T')}+08:00`).toISOString()
 
-/** @returns {import('../domain/orderRules').Order[]} 每次返回新的对象 */
-export function createSeedOrders() {
-  // 按创建先后编号；同一时间按表中顺序
-  const rows = ROWS.map((row, index) => ({ row, index })).sort(
-    (a, b) => a.row[0].localeCompare(b.row[0]) || a.index - b.index,
-  )
+/**
+ * 由数据行生成订单：按创建先后编号 ID，订单号 = FM + 创建日期 + 当日序号
+ * @param {Array<[string, string, string, number, number|null, string, number, string]>} dataRows
+ *   [创建时间（上海）, 会员姓名, 手机号, 累计年限, 金额, 状态, 版本, 备注]
+ * @returns {import('../domain/orderRules').Order[]} 每次返回新的对象
+ */
+export function buildOrders(dataRows) {
+  // 同一时间按表中顺序
+  const rows = dataRows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => a.row[0].localeCompare(b.row[0]) || a.index - b.index)
   const seqByDate = {}
   return rows.map(({ row }, i) => {
     const [
@@ -89,3 +94,6 @@ export function createSeedOrders() {
     }
   })
 }
+
+/** 默认演示数据：36 笔，6 种状态各 6 笔 */
+export const createSeedOrders = () => buildOrders(ROWS)

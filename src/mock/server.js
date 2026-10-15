@@ -1,19 +1,8 @@
 // 内存模拟服务：只处理已解析的请求对象，与 axios 无关。
 
-import { ERROR_STATUS, createErrorBody } from '../api/errors'
-
-export class MockHttpError extends Error {
-  /**
-   * @param {keyof typeof ERROR_STATUS} code
-   * @param {string} message
-   * @param {object} [extra] fieldErrors / invalidOrders
-   */
-  constructor(code, message, extra) {
-    super(message)
-    this.status = ERROR_STATUS[code]
-    this.body = createErrorBody(code, message, extra)
-  }
-}
+import { createErrorBody } from '../api/errors'
+import { MockHttpError } from './httpError'
+import { listOrders } from './orders'
 
 // ---- token ----
 // 无状态 mock token：mock.<base64(JSON { sub, iat })>，刷新页面后仍可校验。
@@ -69,6 +58,7 @@ const listOperationLogs = () => ({ items: [] })
 /** key 为 "METHOD /path"；public 路由不校验 token */
 const routes = {
   'POST /auth/login': { handler: login, public: true },
+  'GET /orders': { handler: listOrders },
   'GET /operation-logs': { handler: listOperationLogs },
 }
 
