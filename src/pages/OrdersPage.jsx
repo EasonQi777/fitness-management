@@ -1,16 +1,26 @@
-import { Button, Empty, Form, Input, Result, Space, Tabs, Tooltip } from 'antd'
+import {
+  Button,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Result,
+  Space,
+  Tabs,
+  Tooltip,
+} from 'antd'
 import { useEffect, useState } from 'react'
 import OrderTable from '../components/OrderTable'
+import RenewOrdersModal from '../components/RenewOrdersModal'
 import SelectedOrdersDrawer from '../components/SelectedOrdersDrawer'
 import { DEFAULT_QUERY, PAGE_SIZES } from '../domain/orderQuery'
-import { ORDER_TABS } from '../domain/orderStatus'
+import { canRenew, ORDER_STATUS, ORDER_TABS } from '../domain/orderStatus'
 import { useOrderQuery } from '../hooks/useOrderQuery'
 import { useOrderSelection } from '../hooks/useOrderSelection'
 import { useOrders } from '../hooks/useOrders'
 
 const TAB_ITEMS = ORDER_TABS.map(({ key, label }) => ({ key, label }))
 
-// 续卡弹窗在 T32 接入
 export default function OrdersPage() {
   const [query, setQuery] = useOrderQuery()
   const { items, total, loading, error, refresh } = useOrders(query)
@@ -18,6 +28,9 @@ export default function OrdersPage() {
   // 勾选跨页、跨 Tab、跨搜索保留，可在“查看已选”中核对
   const selection = useOrderSelection(items)
   const [viewingSelected, setViewingSelected] = useState(false)
+  // 正在续卡的订单：{ orders, batch }，null 表示弹窗关闭
+  const [renewing, setRenewing] = useState(null)
+  const [modal, modalHolder] = Modal.useModal()
 
   // 输入框是草稿；已提交条件变化（含浏览器前进后退）时用其回填
   useEffect(() => {
@@ -35,6 +48,38 @@ export default function OrdersPage() {
   function reset() {
     form.setFieldsValue({ orderNo: '', memberName: '' })
     setQuery({ orderNo: '', memberName: '' })
+  }
+
+  function renewSelected() {
+    // 先按勾选时的状态预检，不合格时不打开弹窗、不发送请求；接口仍做最终校验
+    const blocked = selection.selectedOrders.filter((o) => !canRenew(o.status))
+    if (blocked.length) {
+      modal.warning({
+        title: `已选订单中有 ${blocked.length} 笔不可续卡`,
+        okText: '知道了',
+        content: (
+          <>
+            <p>仅“已到期”订单可续卡，请在“查看已选”中移除以下订单后重试：</p>
+            <ul className="m-0 pl-5">
+              {blocked.map((o) => (
+                <li key={o.id}>
+                  {o.orderNo}（{o.memberName}，
+                  {ORDER_STATUS[o.status]?.label ?? o.status}）
+                </li>
+              ))}
+            </ul>
+          </>
+        ),
+      })
+      return
+    }
+    setRenewing({ orders: selection.selectedOrders, batch: true })
+  }
+
+  function renewed() {
+    if (renewing.batch) selection.clear()
+    setRenewing(null)
+    refresh()
   }
 
   const filtered =
@@ -94,7 +139,24 @@ export default function OrdersPage() {
         >
           清空选择
         </Button>
+        <Button
+          size="small"
+          type="primary"
+          disabled={selection.count === 0}
+          onClick={renewSelected}
+        >
+          批量续卡
+        </Button>
       </div>
+
+      {renewing && (
+        <RenewOrdersModal
+          orders={renewing.orders}
+          onCancel={() => setRenewing(null)}
+          onSuccess={renewed}
+        />
+      )}
+      {modalHolder}
 
       <SelectedOrdersDrawer
         open={viewingSelected}
@@ -121,6 +183,7 @@ export default function OrdersPage() {
       ) : (
         <OrderTable
           items={items}
+          onRenew={(order) => setRenewing({ orders: [order], batch: false })}
           rowSelection={{
             selectedRowKeys: selection.selectedIds,
             preserveSelectedRowKeys: true,
