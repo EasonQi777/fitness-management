@@ -2,7 +2,13 @@
 
 import { createErrorBody } from '../api/errors'
 import { MockHttpError } from './httpError'
-import { cancelOrders, createOrder, listOrders, renewOrders } from './orders'
+import {
+  cancelOrders,
+  createOrder,
+  listOperationLogs,
+  listOrders,
+  renewOrders,
+} from './orders'
 
 // ---- token ----
 // 无状态 mock token：mock.<base64(JSON { sub, iat })>，刷新页面后仍可校验。
@@ -51,9 +57,6 @@ function login({ body }) {
     })
   return { token: createToken(username), username }
 }
-
-// 操作日志在 T36 写入，目前为空
-const listOperationLogs = () => ({ items: [] })
 
 /** key 为 "METHOD /path"；public 路由不校验 token */
 const routes = {

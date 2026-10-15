@@ -75,6 +75,16 @@ export default function OrdersPage() {
   const [renewing, setRenewing] = useState(null)
   // 待确认撤单的订单，null 表示弹窗关闭
   const [cancelling, setCancelling] = useState(null)
+  // 最近一次写入成功：{ text, queryKey }。写后刷新失败时据此说明“操作已成功”，避免员工误以为失败而重复操作
+  const [lastWrite, setLastWrite] = useState(null)
+  const queryKey = JSON.stringify(query)
+
+  // 写入后记录移出当前筛选、末页变空时（或链接中的页码过大），回到最后有效页；替换历史记录，后退不会回到空页
+  const lastPage = Math.max(1, Math.ceil(total / query.pageSize))
+  useEffect(() => {
+    if (!loading && !error && query.page > lastPage)
+      setQuery({ page: lastPage }, { replace: true })
+  }, [loading, error, query.page, lastPage, setQuery])
 
   // 输入框是草稿；已提交条件变化（含浏览器前进后退）时用其回填
   useEffect(() => {
@@ -102,17 +112,21 @@ export default function OrdersPage() {
     (o) => !canCancel(o.status),
   )
 
-  function renewed() {
+  function renewed({ orders }) {
     if (renewing.batch) selection.clear()
     setRenewing(null)
+    setLastWrite({ text: `${orders.length} 笔订单续卡已成功`, queryKey })
     refresh()
   }
 
-  function cancelled() {
+  function cancelled({ orders }) {
     selection.clear()
     setCancelling(null)
+    setLastWrite({ text: `${orders.length} 笔订单撤单已成功`, queryKey })
     refresh()
   }
+
+  const refreshFailedAfterWrite = error && lastWrite?.queryKey === queryKey
 
   const filtered =
     query.tab !== DEFAULT_QUERY.tab || query.orderNo || query.memberName
@@ -221,12 +235,20 @@ export default function OrdersPage() {
         // 失败时不展示旧数据；重试沿用已提交的条件（URL），而不是输入框中的草稿
         <div role="alert">
           <Result
-            status="error"
-            title="订单加载失败"
-            subTitle={error.message}
+            status={refreshFailedAfterWrite ? 'warning' : 'error'}
+            title={
+              refreshFailedAfterWrite
+                ? `${lastWrite.text}，但订单列表刷新失败`
+                : '订单加载失败'
+            }
+            subTitle={
+              refreshFailedAfterWrite
+                ? `${error.message}。点击“重新加载列表”只会重新查询，不会重复执行操作。`
+                : error.message
+            }
             extra={
               <Button type="primary" onClick={refresh}>
-                重试
+                {refreshFailedAfterWrite ? '重新加载列表' : '重试'}
               </Button>
             }
           />
