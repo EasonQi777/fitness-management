@@ -1,9 +1,12 @@
 // 订单相关模拟接口。
 
 import { PAGE_SIZES } from '../domain/orderQuery'
+import { calcNewPrice, validateOrderInput } from '../domain/orderRules'
 import { ORDER_TABS } from '../domain/orderStatus'
 import { db } from './db'
 import { MockHttpError } from './httpError'
+import { idempotent } from './writes'
+import { formatDateTime } from '../utils/format'
 
 const invalid = (message) => new MockHttpError('VALIDATION_ERROR', message)
 
@@ -64,3 +67,53 @@ export function listOrders({ query }) {
     pageSize,
   }
 }
+
+const pad3 = (n) => String(n).padStart(3, '0')
+
+function nextId() {
+  const max = Math.max(0, ...db.orders.map((o) => Number(o.id.slice(2)) || 0))
+  return `o-${pad3(max + 1)}`
+}
+
+/** 订单号 = FM + 创建日期（上海时间）+ 当日序号 */
+function nextOrderNo(createdAt) {
+  const prefix = `FM${formatDateTime(createdAt).slice(0, 10).replaceAll('-', '')}`
+  const seqs = db.orders
+    .filter((o) => o.orderNo.startsWith(prefix))
+    .map((o) => Number(o.orderNo.slice(prefix.length)))
+  return prefix + pad3(Math.max(0, ...seqs) + 1)
+}
+
+/**
+ * POST /orders：新建订单。
+ * 只接受姓名、手机号、年限、备注；金额、状态、编号由服务端决定，不信任页面传入的值。
+ */
+export const createOrder = idempotent('POST /orders', ({ body }) => {
+  const input = {
+    memberName: body?.memberName,
+    phone: body?.phone,
+    cardYears: body?.cardYears,
+    remark: body?.remark,
+  }
+  const fieldErrors = validateOrderInput(input)
+  if (Object.keys(fieldErrors).length)
+    throw new MockHttpError('VALIDATION_ERROR', '订单信息填写有误', {
+      fieldErrors,
+    })
+
+  const createdAt = new Date().toISOString()
+  const order = {
+    id: nextId(),
+    orderNo: nextOrderNo(createdAt),
+    memberName: input.memberName.trim(),
+    phone: input.phone,
+    cardYears: input.cardYears,
+    amount: calcNewPrice(input.cardYears),
+    status: 'pending_review',
+    createdAt,
+    remark: input.remark?.trim() ?? '',
+    version: 1,
+  }
+  db.orders = [...db.orders, order]
+  return order
+})
