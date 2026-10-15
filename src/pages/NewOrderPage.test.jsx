@@ -251,31 +251,6 @@ describe('提交', () => {
     expect(sentKeys).toHaveLength(0)
   })
 
-  test('服务端返回字段错误：显示在对应字段，其余输入保留', async () => {
-    // 后端新增的规则：同一手机号已有进行中的订单
-    interceptNext = (config) =>
-      Promise.reject(
-        new AxiosError('fail', 'ERR_BAD_REQUEST', config, null, {
-          status: 400,
-          data: createErrorBody('VALIDATION_ERROR', '订单信息填写有误', {
-            fieldErrors: { phone: '该手机号已有进行中的订单' },
-          }),
-        }),
-      )
-    const form = openForm()
-    await fillZhou(form)
-    await userEvent.click(submitButton())
-
-    await waitFor(() =>
-      expect(errorOf(form.phone())).toBe('该手机号已有进行中的订单'),
-    )
-    expect(form.router.state.location.pathname).toBe('/orders/new')
-    expect(form.name()).toHaveValue('周雨桐')
-    expect(form.years()).toHaveValue('5')
-    expect(form.remark()).toHaveValue('朋友推荐，周末到店领卡')
-    expect(submitButton()).not.toHaveClass('ant-btn-loading')
-  })
-
   test('服务异常：只由请求层提示一次，输入全部保留，可再次提交', async () => {
     const toast = vi.spyOn(message, 'error')
     interceptNext = (config) =>

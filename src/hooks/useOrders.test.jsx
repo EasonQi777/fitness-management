@@ -1,13 +1,14 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { AxiosError, CanceledError } from 'axios'
+import axios, { AxiosError, CanceledError } from 'axios'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createErrorBody } from '../api/errors'
 import { http } from '../api/http'
 import { DEFAULT_QUERY } from '../domain/orderQuery'
-import { db, resetMockDb } from '../mock/db'
+import { createMockAdapter } from '../mock/adapter'
+import { resetMockDb } from '../mock/db'
 import { useAuthStore } from '../store/authStore'
-import { authOf, FRONT_DESK } from '../test/fixtures'
+import { authOf, FRONT_DESK, MANAGER, tokenFor } from '../test/fixtures'
 import { useOrders } from './useOrders'
 
 const initial = useAuthStore.getState()
@@ -15,9 +16,28 @@ const initial = useAuthStore.getState()
 // 查询条件取自初始数据：姓名含“袁”的 2 笔（夫妻同办），已到期 6 笔
 const BY_YUAN = { ...DEFAULT_QUERY, memberName: '袁' }
 const EXPIRED = { ...DEFAULT_QUERY, tab: 'expired' }
+// 已到期 Tab 的查询结果（创建时间降序）
+const EXPIRED_NAMES = [
+  '刘婷',
+  '陈志强',
+  '阿依古丽·买买提',
+  '李秀英',
+  '王建国',
+  '欧阳晓峰',
+]
+
+// 以对应员工身份直接访问模拟服务（无网络延迟）
+const clientOf = (user) =>
+  axios.create({
+    baseURL: '/api',
+    adapter: createMockAdapter({ delay: 0 }),
+    headers: { Authorization: `Bearer ${tokenFor(user)}` },
+  })
+const server = clientOf(FRONT_DESK)
+const manager = clientOf(MANAGER)
 
 /**
- * 替换 http.get：每次请求的响应由测试决定何时返回。
+ * 替换 http.get：每次请求何时返回由测试决定，返回内容是模拟服务对该请求的真实响应。
  * honorAbort=false 模拟“响应已在途中、取消来不及”的情况。
  */
 function controlledRequests({ honorAbort = true } = {}) {
@@ -25,7 +45,8 @@ function controlledRequests({ honorAbort = true } = {}) {
   vi.spyOn(http, 'get').mockImplementation((url, config) => {
     let resolve, reject
     const promise = new Promise((res, rej) => {
-      resolve = (data) => res({ data })
+      resolve = async () =>
+        res(await server.get(url, { params: config.params }))
       reject = rej
     })
     if (honorAbort)
@@ -41,10 +62,6 @@ function controlledRequests({ honorAbort = true } = {}) {
   return calls
 }
 
-const pageOf = (names) => ({
-  items: names.map((memberName, i) => ({ id: `o-${i}`, memberName })),
-  total: names.length,
-})
 const serverError = () =>
   new AxiosError('fail', 'ERR_BAD_RESPONSE', {}, null, {
     status: 500,
@@ -79,8 +96,15 @@ describe('通过真实 mock 加载', () => {
     const { result } = render(EXPIRED)
     await waitFor(() => expect(result.current.total).toBe(6))
 
-    // 期间另一位员工为王建国续卡，订单不再是已到期
-    db.orders.find((o) => o.memberName === '王建国').status = 'pending_review'
+    // 期间店长在另一台电脑上为王建国续卡，订单不再是已到期
+    const wang = result.current.items.find((o) => o.memberName === '王建国')
+    await manager.post(
+      '/orders/renew',
+      { orders: [{ id: wang.id, version: wang.version }], years: 1 },
+      {
+        headers: { 'Idempotency-Key': 'a7f3c9e1-2b4d-4e8a-9c61-0d5e7b2f8a43' },
+      },
+    )
     act(() => result.current.refresh())
     expect(result.current.loading).toBe(true)
     await waitFor(() => expect(result.current.total).toBe(5))
@@ -93,10 +117,10 @@ describe('竞态', () => {
     const { result, rerender } = render(BY_YUAN)
     rerender({ q: EXPIRED })
 
-    await act(() => calls[1].resolve(pageOf(['欧阳晓峰', '王建国'])))
-    await act(() => calls[0].resolve(pageOf(['袁志远', '袁思琪'])))
+    await act(() => calls[1].resolve())
+    await act(() => calls[0].resolve())
 
-    expect(names(result.current)).toEqual(['欧阳晓峰', '王建国'])
+    expect(names(result.current)).toEqual(EXPIRED_NAMES)
     expect(result.current.loading).toBe(false)
   })
 
@@ -113,11 +137,11 @@ describe('竞态', () => {
     const { result, rerender } = render(BY_YUAN)
     rerender({ q: EXPIRED })
 
-    await act(() => calls[1].resolve(pageOf(['欧阳晓峰'])))
+    await act(() => calls[1].resolve())
     await act(() => calls[0].reject(serverError()))
 
     expect(result.current.error).toBeNull()
-    expect(names(result.current)).toEqual(['欧阳晓峰'])
+    expect(names(result.current)).toEqual(EXPIRED_NAMES)
   })
 
   test('旧请求返回不会关闭新请求的 loading', async () => {
@@ -125,22 +149,25 @@ describe('竞态', () => {
     const { result, rerender } = render(BY_YUAN)
     rerender({ q: EXPIRED })
 
-    await act(() => calls[0].resolve(pageOf(['袁志远', '袁思琪'])))
+    await act(() => calls[0].resolve())
     expect(result.current.loading).toBe(true)
     expect(names(result.current)).not.toContain('袁志远')
 
-    await act(() => calls[1].resolve(pageOf(['欧阳晓峰'])))
+    await act(() => calls[1].resolve())
     expect(result.current.loading).toBe(false)
+    expect(names(result.current)).toEqual(EXPIRED_NAMES)
   })
 
   test('翻页时保留上一页数据并显示 loading', async () => {
     const calls = controlledRequests()
     const { result, rerender } = render(DEFAULT_QUERY)
-    await act(() => calls[0].resolve(pageOf(['范思远', '杜娟'])))
+    await act(() => calls[0].resolve())
+    const firstPage = names(result.current)
+    expect(firstPage).toHaveLength(10)
 
     rerender({ q: { ...DEFAULT_QUERY, page: 2 } })
     expect(result.current.loading).toBe(true)
-    expect(names(result.current)).toEqual(['范思远', '杜娟'])
+    expect(names(result.current)).toEqual(firstPage)
   })
 })
 
@@ -171,8 +198,8 @@ describe('失败', () => {
     act(() => result.current.refresh())
     expect(result.current.error).toBeNull()
     expect(calls[1].params).toMatchObject(EXPIRED) // 沿用已提交条件
-    await act(() => calls[1].resolve(pageOf(['欧阳晓峰'])))
-    expect(names(result.current)).toEqual(['欧阳晓峰'])
+    await act(() => calls[1].resolve())
+    expect(names(result.current)).toEqual(EXPIRED_NAMES)
   })
 })
 
@@ -184,7 +211,7 @@ describe('卸载与 StrictMode', () => {
     unmount()
     expect(calls[0].signal.aborted).toBe(true)
 
-    await act(() => calls[0].resolve(pageOf(['范思远'])))
+    await act(() => calls[0].resolve())
     expect(result.current).toBe(before)
   })
 
@@ -194,8 +221,8 @@ describe('卸载与 StrictMode', () => {
     const live = calls.filter((c) => !c.signal.aborted)
     expect(live).toHaveLength(1)
 
-    await act(() => live[0].resolve(pageOf(['欧阳晓峰', '王建国'])))
+    await act(() => live[0].resolve())
     expect(result.current).toMatchObject({ loading: false, error: null })
-    expect(names(result.current)).toEqual(['欧阳晓峰', '王建国'])
+    expect(names(result.current)).toEqual(EXPIRED_NAMES)
   })
 })

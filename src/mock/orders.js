@@ -1,11 +1,17 @@
 // 订单相关模拟接口。
 
 import { PAGE_SIZES } from '../domain/orderQuery'
-import { calcNewPrice, validateOrderInput } from '../domain/orderRules'
-import { ORDER_TABS } from '../domain/orderStatus'
+import {
+  calcNewPrice,
+  calcRenewPrice,
+  calcRenewTotal,
+  validateOrderInput,
+  validateYears,
+} from '../domain/orderRules'
+import { ORDER_STATUS, ORDER_TABS, canRenew } from '../domain/orderStatus'
 import { db } from './db'
 import { MockHttpError } from './httpError'
-import { idempotent } from './writes'
+import { idempotent, resolveOrders, saveOrders } from './writes'
 import { formatDateTime } from '../utils/format'
 
 const invalid = (message) => new MockHttpError('VALIDATION_ERROR', message)
@@ -116,4 +122,37 @@ export const createOrder = idempotent('POST /orders', ({ body }) => {
   }
   db.orders = [...db.orders, order]
   return order
+})
+
+/**
+ * POST /orders/renew：续卡（单条与批量共用）。
+ * 仅已到期订单可续；累计年限增加、状态改为待审核、版本加 1；
+ * 金额与创建时间保留原值，续卡费用只在响应中返回（T36 写入操作日志）。
+ */
+export const renewOrders = idempotent('POST /orders/renew', ({ body }) => {
+  const years = body?.years
+  const yearsError = validateYears(years)
+  if (yearsError)
+    throw new MockHttpError('VALIDATION_ERROR', yearsError, {
+      fieldErrors: { years: yearsError },
+    })
+
+  const orders = resolveOrders(body.orders, {
+    check: (o) =>
+      canRenew(o.status)
+        ? null
+        : `订单状态为「${ORDER_STATUS[o.status]?.label ?? o.status}」，仅已到期订单可续卡`,
+  })
+  const updated = orders.map((o) => ({
+    ...o,
+    cardYears: o.cardYears + years,
+    status: 'pending_review',
+    version: o.version + 1,
+  }))
+  saveOrders(updated)
+  return {
+    orders: updated,
+    unitPrice: calcRenewPrice(years),
+    totalPrice: calcRenewTotal(years, updated.length),
+  }
 })
