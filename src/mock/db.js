@@ -5,6 +5,8 @@ import { createSeedOrders } from './seed'
 export const db = {
   /** @type {import('../domain/orderRules').Order[]} */
   orders: [],
+  /** 幂等记录：[用户, 接口, 幂等键] → { print, result } */
+  idempotency: new Map(),
 }
 
 /**
@@ -13,6 +15,7 @@ export const db = {
  */
 export function resetMockDb(orders = createSeedOrders()) {
   db.orders = structuredClone(orders)
+  db.idempotency = new Map()
 }
 
 resetMockDb()
