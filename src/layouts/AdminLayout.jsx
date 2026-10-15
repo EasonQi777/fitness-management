@@ -4,11 +4,12 @@ import {
   UnorderedListOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Breadcrumb, Button, Layout, Menu } from 'antd'
+import { Breadcrumb, Button, Layout, Menu, Modal } from 'antd'
 import { useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuthStore } from '../store/authStore'
 import { endSession } from '../store/session'
+import { useUnsavedStore } from '../store/unsavedStore'
 
 const MENU_ITEMS = [
   { key: '/orders', icon: <UnorderedListOutlined />, label: '订单列表' },
@@ -25,6 +26,13 @@ export default function AdminLayout() {
   const navigate = useNavigate()
   const username = useAuthStore((s) => s.username)
   const [collapsed, setCollapsed] = useState(false)
+  const [confirmingLogout, setConfirmingLogout] = useState(false)
+
+  // 主动退出：有未保存的表单内容时先确认（401 失效不经过这里，直接退出）
+  function logout() {
+    if (useUnsavedStore.getState().dirty) setConfirmingLogout(true)
+    else endSession()
+  }
 
   return (
     <Layout className="min-h-screen">
@@ -54,11 +62,7 @@ export default function AdminLayout() {
             <UserOutlined />
             {username}
           </span>
-          <Button
-            type="link"
-            icon={<LogoutOutlined />}
-            onClick={() => endSession()}
-          >
+          <Button type="link" icon={<LogoutOutlined />} onClick={logout}>
             退出登录
           </Button>
         </Layout.Header>
@@ -69,6 +73,19 @@ export default function AdminLayout() {
           />
           <Outlet />
         </Layout.Content>
+        <Modal
+          open={confirmingLogout}
+          title="确定退出登录？"
+          okText="退出登录"
+          cancelText="继续编辑"
+          onOk={() => {
+            setConfirmingLogout(false)
+            endSession()
+          }}
+          onCancel={() => setConfirmingLogout(false)}
+        >
+          当前页面有未提交的内容，退出后将丢失。
+        </Modal>
       </Layout>
     </Layout>
   )

@@ -4,6 +4,7 @@ import {
   Input,
   InputNumber,
   message,
+  Modal,
   Space,
   Typography,
 } from 'antd'
@@ -19,6 +20,7 @@ import {
   validateRemark,
   validateYears,
 } from '../domain/orderRules'
+import { useLeaveGuard } from '../hooks/useLeaveGuard'
 import { formatAmount } from '../utils/format'
 
 // 复用领域层的验证函数：页面提示与接口校验使用同一套规则
@@ -53,6 +55,12 @@ export default function NewOrderPage() {
   const [form] = Form.useForm()
   const navigate = useNavigate()
   const years = Form.useWatch('cardYears', form)
+  // 初始为空表单：任一字段有值即视为有未保存内容（输入后又删掉不算）
+  const values = Form.useWatch([], form)
+  const dirty = Object.values(values ?? {}).some(
+    (v) => v !== undefined && v !== null && v !== '',
+  )
+  const { blocker, allowLeave } = useLeaveGuard(dirty)
   const [submitting, setSubmitting] = useState(false)
   // 按钮 loading 挡不住回车重复提交，用 ref 做同步锁
   const lockRef = useRef(false)
@@ -69,6 +77,7 @@ export default function NewOrderPage() {
         idempotencyKey: keyRef.current,
       })
       message.success(`订单 ${order.orderNo} 创建成功`)
+      allowLeave()
       // 进入默认列表第一页（全部、无搜索、每页 10 条），新订单位于最前
       navigate('/orders')
     } catch (err) {
@@ -152,6 +161,16 @@ export default function NewOrderPage() {
           <Button onClick={() => navigate('/orders')}>取消</Button>
         </Space>
       </Form>
+      <Modal
+        open={blocker.state === 'blocked'}
+        title="离开此页面？"
+        okText="离开"
+        cancelText="继续编辑"
+        onOk={() => blocker.proceed?.()}
+        onCancel={() => blocker.reset?.()}
+      >
+        填写的订单信息尚未提交，离开后将丢失。
+      </Modal>
     </section>
   )
 }

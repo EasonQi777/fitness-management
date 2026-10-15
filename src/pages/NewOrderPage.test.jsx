@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { message } from 'antd'
+import { message, Modal } from 'antd'
 import { AxiosError } from 'axios'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import AppProviders from '../AppProviders'
@@ -341,5 +341,138 @@ describe('提交', () => {
     )
     expect(sentKeys[1]).not.toBe(sentKeys[0])
     expect(created()).toEqual([expect.objectContaining({ cardYears: 3 })])
+  })
+})
+
+describe('未保存内容离开提示', () => {
+  afterEach(() => Modal.destroyAll())
+
+  const path = (form) => form.router.state.location.pathname
+  const leaveDialog = () =>
+    screen.queryByRole('dialog', { name: '离开此页面？' })
+  // 顶栏的退出按钮（确认弹窗中也有同名按钮）
+  const headerLogout = () =>
+    within(document.querySelector('.ant-layout-header')).getByRole('button', {
+      name: /退出登录/,
+    })
+  const logoutDialog = () =>
+    screen.findByRole('dialog', { name: '确定退出登录？' })
+  const clickMenu = (label) =>
+    userEvent.click(within(screen.getByRole('menu')).getByText(label))
+
+  test('空白表单离开不提示', async () => {
+    const form = openForm()
+    await clickMenu('订单列表')
+    await waitFor(() => expect(path(form)).toBe('/orders'))
+    expect(leaveDialog()).toBeNull()
+  })
+
+  test('输入后又删除（与初始值相同）离开不提示', async () => {
+    const form = openForm()
+    await userEvent.type(form.name(), '周雨桐')
+    await userEvent.clear(form.name())
+    await clickMenu('订单列表')
+    await waitFor(() => expect(path(form)).toBe('/orders'))
+  })
+
+  test('填写后点菜单：提示确认；选择继续编辑，留在本页且输入保留', async () => {
+    const form = openForm()
+    await userEvent.type(form.name(), '周雨桐')
+    await fill(form.years(), '5')
+    await clickMenu('订单列表')
+
+    expect(await screen.findByRole('dialog', { name: '离开此页面？' }))
+    await userEvent.click(screen.getByRole('button', { name: /继续编辑/ }))
+    expect(path(form)).toBe('/orders/new')
+    expect(form.name()).toHaveValue('周雨桐')
+    expect(form.years()).toHaveValue('5')
+  })
+
+  test('填写后点取消按钮：确认离开后回到列表', async () => {
+    const form = openForm()
+    await userEvent.type(form.phone(), '13816527409')
+    await userEvent.click(screen.getByRole('button', { name: /取\s*消/ }))
+    await screen.findByRole('dialog', { name: '离开此页面？' })
+    await userEvent.click(screen.getByRole('button', { name: /离\s*开/ }))
+    await waitFor(() => expect(path(form)).toBe('/orders'))
+  })
+
+  test('浏览器后退同样提示', async () => {
+    const form = openForm()
+    await act(() => form.router.navigate('/orders?tab=expired'))
+    await act(() => form.router.navigate('/orders/new'))
+    await userEvent.type(form.name(), '周雨桐')
+    await act(() => form.router.navigate(-1))
+    expect(await screen.findByRole('dialog', { name: '离开此页面？' }))
+    expect(path(form)).toBe('/orders/new')
+  })
+
+  test('刷新或关闭页面：有未保存内容时触发浏览器原生提示', async () => {
+    const form = openForm()
+    const unload = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    expect(unload()).toBe(false)
+    await userEvent.type(form.name(), '周雨桐')
+    await waitFor(() => expect(unload()).toBe(true))
+  })
+
+  test('提交成功跳转列表时不提示', async () => {
+    const form = openForm()
+    await fill(form.name(), '周雨桐')
+    await fill(form.phone(), '13816527409')
+    await fill(form.years(), '5')
+    await userEvent.click(screen.getByRole('button', { name: /提交订单/ }))
+    await waitFor(() => expect(path(form)).toBe('/orders'))
+    expect(leaveDialog()).toBeNull()
+  })
+
+  test('主动退出登录：有未提交内容时先确认，选择继续编辑则保持登录', async () => {
+    const form = openForm()
+    await userEvent.type(form.name(), '周雨桐')
+    await userEvent.click(headerLogout())
+
+    const dialog = await logoutDialog()
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: /继续编辑/ }),
+    )
+    expect(useAuthStore.getState().token).not.toBeNull()
+    expect(path(form)).toBe('/orders/new')
+    expect(form.name()).toHaveValue('周雨桐')
+  })
+
+  test('主动退出登录：确认后退出并回到登录页，不再弹出离开提示', async () => {
+    const form = openForm()
+    await userEvent.type(form.name(), '周雨桐')
+    await userEvent.click(headerLogout())
+    const dialog = await logoutDialog()
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: /退出登录/ }),
+    )
+
+    await waitFor(() => expect(path(form)).toBe('/login'))
+    expect(useAuthStore.getState().token).toBeNull()
+    expect(leaveDialog()).toBeNull()
+  })
+
+  test('没有未保存内容时退出登录不提示', async () => {
+    const form = openForm()
+    await userEvent.click(headerLogout())
+    await waitFor(() => expect(path(form)).toBe('/login'))
+    expect(screen.queryByRole('dialog', { name: '确定退出登录？' })).toBeNull()
+  })
+
+  test('登录失效（401）：不被表单拦截，直接回到登录页', async () => {
+    const form = openForm()
+    await userEvent.type(form.name(), '周雨桐')
+    // 本地保存的 token 被截断，下一次请求返回 401
+    const { token } = useAuthStore.getState()
+    useAuthStore.setState({ token: token.slice(0, 18) })
+    await act(() => http.get('/operation-logs').catch(() => {}))
+
+    await waitFor(() => expect(path(form)).toBe('/login'))
+    expect(leaveDialog()).toBeNull()
   })
 })
