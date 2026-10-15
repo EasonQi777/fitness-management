@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { message } from 'antd'
-import axios, { AxiosError } from 'axios'
+import axios, { AxiosError, AxiosHeaders } from 'axios'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import AppProviders from '../AppProviders'
@@ -1056,5 +1056,123 @@ describe('写入后的列表', () => {
     await clickTab('全部')
     expect(screen.getByRole('alert')).toHaveTextContent('订单加载失败')
     expect(screen.getByRole('alert')).not.toHaveTextContent('续卡已成功')
+  })
+})
+
+describe('退出与重新登录', () => {
+  // sessionExpired = true 时，下一次写请求到达服务器前登录已失效：
+  // 去掉认证头交给真实模拟服务，由服务端返回 401
+  let sessionExpired
+  let writeRequests
+  beforeEach(() => {
+    sessionExpired = false
+    writeRequests = 0
+    http.defaults.adapter = async (config) => {
+      if (config.method !== 'post' || config.url === '/auth/login')
+        return realAdapter(config)
+      writeRequests++
+      if (!sessionExpired) return realAdapter(config)
+      sessionExpired = false
+      const headers = new AxiosHeaders(config.headers)
+      headers.delete('Authorization')
+      try {
+        return await realAdapter({ ...config, headers })
+      } catch (err) {
+        err.config = config // 请求层按发出时携带的 token 判断是否属于当前会话
+        throw err
+      }
+    }
+  })
+  afterEach(() => message.destroy())
+
+  const rowOf = (name) => rows().find((tr) => cellOf(tr, '会员姓名') === name)
+  const toggle = (name) =>
+    userEvent.click(within(rowOf(name)).getByRole('checkbox'))
+  const selectedCount = () =>
+    Number(document.querySelector('[aria-live] strong').textContent)
+  const headerLogout = () =>
+    within(document.querySelector('.ant-layout-header')).getByRole('button', {
+      name: /退出登录/,
+    })
+  async function loginAs(user) {
+    await userEvent.type(await screen.findByLabelText('账号'), user.username)
+    await userEvent.type(
+      screen.getByLabelText('密码'),
+      `${user.password}{Enter}`,
+    )
+  }
+
+  test('前台跨 Tab 勾选 3 笔后退出，店长登录：看不到前台的勾选', async () => {
+    const { router } = await openOrders('/orders?tab=expired')
+    await toggle('王建国')
+    await toggle('李秀英')
+    await clickTab('进行中')
+    await toggle('谢婉婷')
+    expect(selectedCount()).toBe(3)
+
+    await userEvent.click(headerLogout())
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
+
+    await loginAs(MANAGER)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/orders'))
+    await settled()
+    expect(screen.getByText('lijun')).toBeInTheDocument()
+    expect(selectedCount()).toBe(0)
+    expect(screen.getByRole('button', { name: '批量续卡' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '批量撤单' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '查看已选' })).toBeDisabled()
+  })
+
+  test('续卡弹窗中确认时登录已失效：回到登录页且不续卡；店长登录后没有残留弹窗与勾选', async () => {
+    const warning = vi.spyOn(message, 'warning')
+    const { router } = await openOrders('/orders?tab=expired')
+    await toggle('王建国')
+    await toggle('李秀英')
+    await userEvent.click(screen.getByRole('button', { name: '批量续卡' }))
+    await userEvent.clear(screen.getByLabelText('续卡年限'))
+    await userEvent.type(screen.getByLabelText('续卡年限'), '3')
+
+    sessionExpired = true
+    await userEvent.click(screen.getByRole('button', { name: /确认续卡/ }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
+    expect(warning).toHaveBeenCalledWith(
+      expect.objectContaining({ content: '登录已失效，请重新登录' }),
+    )
+    expect(screen.queryByLabelText('续卡年限')).not.toBeInTheDocument()
+
+    await loginAs(MANAGER)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/orders'))
+    await settled()
+    expect(screen.queryByLabelText('续卡年限')).not.toBeInTheDocument()
+    expect(selectedCount()).toBe(0)
+
+    // 服务端拒绝了未认证的请求，两笔订单都没有被续卡
+    await clickTab('已到期')
+    expect(totalText()).toBe('共 6 条')
+    expect(cellOf(rowOf('王建国'), '购卡年限')).toBe('5 年')
+    expect(cellOf(rowOf('李秀英'), '购卡年限')).toBe('3 年')
+    expect(writeRequests).toBe(1)
+  })
+
+  test('撤单确认框中确认时登录已失效：订单不变，重新登录后确认框不在', async () => {
+    const { router } = await openOrders('/orders?tab=in_progress')
+    await toggle('谢婉婷')
+    await userEvent.click(screen.getByRole('button', { name: '批量撤单' }))
+
+    sessionExpired = true
+    await userEvent.click(screen.getByRole('button', { name: /确认撤单/ }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
+
+    await loginAs(FRONT_DESK)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/orders'))
+    await settled()
+    expect(
+      screen.queryByRole('button', { name: /确认撤单/ }),
+    ).not.toBeInTheDocument()
+    expect(selectedCount()).toBe(0)
+
+    await clickTab('进行中')
+    expect(cellOf(rowOf('谢婉婷'), '状态')).toBe('待制卡')
   })
 })

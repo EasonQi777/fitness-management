@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { message, Modal } from 'antd'
+import { message } from 'antd'
 import { AxiosError } from 'axios'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
@@ -52,7 +52,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   message.destroy()
-  Modal.destroyAll()
 })
 
 describe('401 处理', () => {
@@ -129,28 +128,13 @@ describe('页面流程', () => {
     expect(warning).toHaveBeenCalledTimes(1)
   })
 
-  test('手动退出与 401 使用同一流程：关闭弹窗、清除认证、不提示失效', async () => {
+  // 弹窗随页面卸载的真实流程见 OrdersPage.test：“退出与重新登录”
+  test('手动退出与 401 使用同一流程：清除认证、回到登录页、不提示失效', async () => {
     const location = renderLoggedIn('/orders')
-    act(() => {
-      Modal.confirm({
-        title: '确认撤销以下 2 笔订单？',
-        content: 'FM20261006001、FM20261007001',
-      })
-    })
-    await waitFor(() =>
-      expect(document.querySelector('.ant-modal-confirm')).not.toBeNull(),
-    )
-
     await userEvent.click(screen.getByRole('button', { name: /退出登录/ }))
 
     expect(location()).toBe('/login')
     expect(auth().token).toBeNull()
-    await waitFor(() =>
-      // jsdom 不触发 transitionend，弹窗停在离场动画；浏览器中会被移除
-      expect(document.querySelector('.ant-modal-confirm').className).toMatch(
-        /ant-zoom-leave/,
-      ),
-    )
     expect(warning).not.toHaveBeenCalled()
   })
 

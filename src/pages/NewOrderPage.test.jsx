@@ -10,7 +10,7 @@ import { http } from '../api/http'
 import { db, resetMockDb } from '../mock/db'
 import { routes } from '../router/routes'
 import { useAuthStore } from '../store/authStore'
-import { authOf, FRONT_DESK } from '../test/fixtures'
+import { authOf, FRONT_DESK, MANAGER } from '../test/fixtures'
 
 const initial = useAuthStore.getState()
 
@@ -430,6 +430,34 @@ describe('未保存内容离开提示', () => {
     await waitFor(() => expect(path(form)).toBe('/login'))
     expect(useAuthStore.getState().token).toBeNull()
     expect(leaveDialog()).toBeNull()
+  })
+
+  test('前台填了一半退出，店长登录后打开新建订单：表单为空', async () => {
+    const form = openForm()
+    await userEvent.type(form.name(), '周雨桐')
+    await userEvent.type(form.phone(), '13816527409')
+    await userEvent.click(headerLogout())
+    await userEvent.click(
+      within(await logoutDialog()).getByRole('button', { name: /退出登录/ }),
+    )
+    await waitFor(() => expect(path(form)).toBe('/login'))
+
+    await userEvent.type(screen.getByLabelText('账号'), MANAGER.username)
+    await userEvent.type(
+      screen.getByLabelText('密码'),
+      `${MANAGER.password}{Enter}`,
+    )
+    await waitFor(() => expect(path(form)).toBe('/orders'))
+    await userEvent.click(
+      within(await screen.findByRole('menu')).getByText('新建订单'),
+    )
+    await waitFor(() => expect(path(form)).toBe('/orders/new'))
+
+    expect(form.name()).toHaveValue('')
+    expect(form.phone()).toHaveValue('')
+    expect(form.years()).toHaveValue('')
+    expect(form.remark()).toHaveValue('')
+    expect(form.fee()).toBe('请先填写有效的购卡年限')
   })
 
   test('没有未保存内容时退出登录不提示', async () => {
