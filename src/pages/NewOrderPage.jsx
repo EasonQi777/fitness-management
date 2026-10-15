@@ -1,5 +1,16 @@
-import { Button, Form, Input, InputNumber, Space, Typography } from 'antd'
+import {
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  message,
+  Space,
+  Typography,
+} from 'antd'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
+import { parseApiError } from '../api/errors'
+import { createOrder } from '../api/orders'
 import {
   calcNewPrice,
   PRICE_PER_YEAR,
@@ -38,16 +49,54 @@ function Fee({ years }) {
   )
 }
 
-// 提交与结果处理在 T29 接入
 export default function NewOrderPage() {
   const [form] = Form.useForm()
   const navigate = useNavigate()
   const years = Form.useWatch('cardYears', form)
+  const [submitting, setSubmitting] = useState(false)
+  // 按钮 loading 挡不住回车重复提交，用 ref 做同步锁
+  const lockRef = useRef(false)
+  // 同一次提交意图使用同一个幂等键：原样重试复用，修改表单后作废
+  const keyRef = useRef(null)
+
+  async function submit(values) {
+    if (lockRef.current) return
+    lockRef.current = true
+    setSubmitting(true)
+    keyRef.current ??= crypto.randomUUID()
+    try {
+      const order = await createOrder(values, {
+        idempotencyKey: keyRef.current,
+      })
+      message.success(`订单 ${order.orderNo} 创建成功`)
+      // 进入默认列表第一页（全部、无搜索、每页 10 条），新订单位于最前
+      navigate('/orders')
+    } catch (err) {
+      const e = parseApiError(err)
+      if (e.kind === 'field')
+        form.setFields(
+          Object.entries(e.fieldErrors).map(([name, msg]) => ({
+            name,
+            errors: [msg],
+          })),
+        )
+      // 普通错误已由请求层提示，这里不再重复；所有输入保留
+      lockRef.current = false
+      setSubmitting(false)
+    }
+  }
 
   return (
     <section className="max-w-xl rounded-lg bg-white p-6">
       <h1 className="mt-0 mb-6 text-lg font-semibold">新建订单</h1>
-      <Form form={form} layout="vertical" requiredMark>
+      <Form
+        form={form}
+        layout="vertical"
+        requiredMark
+        disabled={submitting}
+        onFinish={submit}
+        onValuesChange={() => (keyRef.current = null)}
+      >
         <Form.Item
           label="会员姓名"
           name="memberName"
@@ -97,7 +146,7 @@ export default function NewOrderPage() {
         </Form.Item>
 
         <Space>
-          <Button type="primary" htmlType="submit">
+          <Button type="primary" htmlType="submit" loading={submitting}>
             提交订单
           </Button>
           <Button onClick={() => navigate('/orders')}>取消</Button>

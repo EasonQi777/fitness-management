@@ -10,3 +10,16 @@ export const fetchOrders = (query, { signal } = {}) =>
   http
     .get('/orders', { params: query, signal, skipErrorToast: true })
     .then((res) => res.data)
+
+/**
+ * 新建订单
+ * @param {{ memberName: string, phone: string, cardYears: number, remark?: string }} values
+ * @param {{ idempotencyKey: string }} options 同一次提交意图使用同一个键，重试时复用
+ * @returns {Promise<import('../domain/orderRules').Order>}
+ */
+export const createOrder = (values, { idempotencyKey }) =>
+  http
+    .post('/orders', values, {
+      headers: { 'Idempotency-Key': idempotencyKey },
+    })
+    .then((res) => res.data)
