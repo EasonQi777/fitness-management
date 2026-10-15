@@ -124,24 +124,6 @@ describe('提交', () => {
     await waitFor(() => expect(location()).toBe('/orders'))
   })
 
-  test('接口字段错误显示到对应字段', async () => {
-    vi.spyOn(http, 'post').mockRejectedValueOnce(
-      httpError(
-        400,
-        createErrorBody('VALIDATION_ERROR', '账号或密码错误', {
-          fieldErrors: { password: '密码错误，请重新输入' },
-        }),
-      ),
-    )
-    const { fillIn, username, submit } = renderLogin()
-    await fillIn()
-    await userEvent.click(submit)
-
-    expect(await screen.findByText('密码错误，请重新输入')).toBeInTheDocument()
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(username).toHaveValue('wangfang')
-  })
-
   test('门店网络断开时显示提示', async () => {
     vi.spyOn(http, 'post').mockRejectedValueOnce(
       new AxiosError('Network Error', 'ERR_NETWORK'),

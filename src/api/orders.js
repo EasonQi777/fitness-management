@@ -23,3 +23,16 @@ export const createOrder = (values, { idempotencyKey }) =>
       headers: { 'Idempotency-Key': idempotencyKey },
     })
     .then((res) => res.data)
+
+/**
+ * 续卡（单条与批量共用）
+ * @param {{ orders: { id: string, version: number }[], years: number }} body
+ * @param {{ idempotencyKey: string }} options
+ * @returns {Promise<{ orders: import('../domain/orderRules').Order[], unitPrice: number, totalPrice: number }>}
+ */
+export const renewOrders = (body, { idempotencyKey }) =>
+  http
+    .post('/orders/renew', body, {
+      headers: { 'Idempotency-Key': idempotencyKey },
+    })
+    .then((res) => res.data)

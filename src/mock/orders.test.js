@@ -176,11 +176,19 @@ describe('参数校验', () => {
 })
 
 describe('数据变化', () => {
-  test('查询读取最新数据：订单撤单后出现在已取消分组', async () => {
-    db.orders.find((o) => o.orderNo === 'FM20261006001').status = 'cancelled'
-    const res = await list({ tab: 'cancelled', pageSize: 50 })
-    expect(res.total).toBe(7)
-    expect(names(res)).toContain('曹宇')
+  test('查询读取最新数据：王建国续卡后离开已到期分组，出现在进行中', async () => {
+    const [wang] = (await list({ tab: 'expired', memberName: '王建国' })).items
+    await client.post(
+      '/orders/renew',
+      { orders: [{ id: wang.id, version: wang.version }], years: 1 },
+      {
+        headers: { 'Idempotency-Key': 'e5b81d4c-9a27-4f63-b0c8-3d1f6a9e2b75' },
+      },
+    )
+    expect((await list({ tab: 'expired' })).total).toBe(5)
+    const active = await list({ tab: 'in_progress', pageSize: 50 })
+    expect(active.total).toBe(19)
+    expect(names(active)).toContain('王建国')
   })
 
   test('返回的是副本，修改响应不影响后续查询', async () => {

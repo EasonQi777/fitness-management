@@ -2,7 +2,7 @@
 
 import { createErrorBody } from '../api/errors'
 import { MockHttpError } from './httpError'
-import { createOrder, listOrders } from './orders'
+import { createOrder, listOrders, renewOrders } from './orders'
 
 // ---- token ----
 // 无状态 mock token：mock.<base64(JSON { sub, iat })>，刷新页面后仍可校验。
@@ -60,6 +60,7 @@ const routes = {
   'POST /auth/login': { handler: login, public: true },
   'GET /orders': { handler: listOrders },
   'POST /orders': { handler: createOrder },
+  'POST /orders/renew': { handler: renewOrders },
   'GET /operation-logs': { handler: listOperationLogs },
 }
 
