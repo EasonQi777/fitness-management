@@ -12,6 +12,7 @@ import { createBulkTestOrders } from '../mock/bulkSeed'
 import { resetMockDb } from '../mock/db'
 import { routes } from '../router/routes'
 import { useAuthStore } from '../store/authStore'
+import { parseCsv } from '../test/csv'
 import { authOf, FRONT_DESK, MANAGER, tokenFor } from '../test/fixtures'
 
 const initial = useAuthStore.getState()
@@ -1174,5 +1175,287 @@ describe('退出与重新登录', () => {
 
     await clickTab('进行中')
     expect(cellOf(rowOf('谢婉婷'), '状态')).toBe('待制卡')
+  })
+})
+
+describe('导出入口', () => {
+  const exportFiltered = () =>
+    screen.getByRole('button', { name: '导出筛选结果' })
+  const exportSelected = () =>
+    screen.getByRole('button', { name: '导出勾选记录' })
+  const previewDialog = () =>
+    screen.getByRole('button', { name: /确认导出/ }).closest('.ant-modal')
+  /** 等待预览生成，返回“可导出 N 笔，排除 M 笔”这一行的文字 */
+  const summaryText = () =>
+    waitFor(
+      () => {
+        const line = previewDialog().querySelector('p[aria-live]')
+        expect(line).not.toBeNull()
+        return line.textContent
+      },
+      { timeout: 3000 },
+    )
+  const closePreview = () =>
+    userEvent.click(
+      within(previewDialog()).getByRole('button', { name: /取\s*消/ }),
+    )
+  const selectedCount = () =>
+    Number(document.querySelector('[aria-live] strong').textContent)
+
+  test('未勾选订单时“导出勾选记录”不可用', async () => {
+    await openOrders()
+    expect(exportSelected()).toBeDisabled()
+    expect(exportFiltered()).toBeEnabled()
+  })
+
+  test('“导出筛选结果”按已提交的条件，而不是输入框里未提交的草稿', async () => {
+    await openOrders('/orders?tab=expired')
+    await userEvent.type(screen.getByLabelText('会员姓名'), '王')
+
+    await userEvent.click(exportFiltered())
+    expect(await summaryText()).toMatch(/^可导出 6 笔，排除 0 笔/)
+    await closePreview()
+
+    await submitSearch()
+    await userEvent.click(exportFiltered())
+    expect(await summaryText()).toMatch(/^可导出 1 笔，排除 0 笔/)
+  })
+
+  test('取消预览：弹窗关闭，勾选保留', async () => {
+    await openOrders('/orders?tab=expired')
+    await userEvent.click(within(rows()[0]).getByRole('checkbox'))
+    await userEvent.click(exportSelected())
+    await summaryText()
+    await closePreview()
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: /确认导出/ }),
+      ).not.toBeInTheDocument(),
+    )
+    expect(selectedCount()).toBe(1)
+  })
+
+  describe('批量测试数据集', () => {
+    beforeEach(() => resetMockDb(createBulkTestOrders()))
+
+    test('跨两页勾选 3 笔已到期订单：预览列出全部 3 笔', async () => {
+      await openOrders('/orders?tab=expired')
+      const picked = []
+      const tick = async (i) => {
+        picked.push(cellOf(rows()[i], '订单号'))
+        await userEvent.click(within(rows()[i]).getByRole('checkbox'))
+      }
+      await tick(0)
+      await tick(9)
+      await andQuery(() => userEvent.click(screen.getByTitle('2')))
+      await tick(4)
+
+      await userEvent.click(exportSelected())
+      expect(await summaryText()).toMatch(/^可导出 3 笔，排除 0 笔/)
+      const listed = [
+        ...previewDialog().querySelectorAll('tr.ant-table-row'),
+      ].map((tr) => tr.querySelector('td').textContent)
+      expect(listed).toEqual(picked)
+    })
+
+    test('“导出筛选结果”不受当前页限制：已到期 15 笔全部可导出', async () => {
+      await openOrders('/orders?tab=expired')
+      expect(rows()).toHaveLength(10)
+      await userEvent.click(exportFiltered())
+      expect(await summaryText()).toMatch(/^可导出 15 笔，排除 0 笔/)
+    })
+  })
+})
+
+describe('导出下载', () => {
+  // jsdom 没有对象 URL 与真实下载：记录页面交给浏览器的文件、创建与释放的对象 URL
+  let files
+  let revoked
+  let createFails
+  const original = {
+    create: URL.createObjectURL,
+    revoke: URL.revokeObjectURL,
+  }
+  beforeEach(() => {
+    files = []
+    revoked = []
+    createFails = false
+    URL.createObjectURL = (blob) => {
+      if (createFails) throw new Error('Out of memory')
+      const url = `blob:http://localhost/${files.length + 1}`
+      files.push({ url, blob })
+      return url
+    }
+    URL.revokeObjectURL = (url) => revoked.push(url)
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
+      function () {
+        const file = files.find((f) => f.url === this.href)
+        file.name = this.download
+        file.linkInPage = document.body.contains(this)
+      },
+    )
+  })
+  afterEach(() => {
+    URL.createObjectURL = original.create
+    URL.revokeObjectURL = original.revoke
+    message.destroy()
+  })
+
+  const rowOf = (name) => rows().find((tr) => cellOf(tr, '会员姓名') === name)
+  const confirmButton = () => screen.getByRole('button', { name: /确认导出/ })
+  /** 打开预览，等预览生成后返回预览中列出的订单号 */
+  async function openPreview(buttonName) {
+    await userEvent.click(screen.getByRole('button', { name: buttonName }))
+    return waitFor(
+      () => {
+        const modal = confirmButton().closest('.ant-modal')
+        expect(modal.querySelector('p[aria-live]')).not.toBeNull()
+        return [...modal.querySelectorAll('tr.ant-table-row')].map(
+          (tr) => tr.querySelector('td').textContent,
+        )
+      },
+      { timeout: 3000 },
+    )
+  }
+  /** 读取文件：确认 UTF-8 BOM，返回解析后的行 */
+  async function read(file) {
+    const bytes = new Uint8Array(await file.blob.arrayBuffer())
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+    return parseCsv(new TextDecoder().decode(bytes)) // 默认解码会去掉 BOM
+  }
+  const closed = () =>
+    waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: /确认导出/ }),
+      ).not.toBeInTheDocument(),
+    )
+
+  test('导出已到期筛选结果：下载 CSV，内容与预览一致，文件名含范围与上海时间', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-15T15:42:08+08:00'))
+    const success = vi.spyOn(message, 'success')
+    await openOrders('/orders?tab=expired')
+    const previewed = await openPreview('导出筛选结果')
+    await userEvent.click(confirmButton())
+    vi.useRealTimers()
+
+    expect(files).toHaveLength(1)
+    const [file] = files
+    expect(file.name).toBe('订单导出_筛选结果_20261015-154208.csv')
+    expect(file.blob.type).toBe('text/csv;charset=utf-8')
+    const rowsInFile = await read(file)
+    expect(rowsInFile[0]).toEqual([
+      '订单号',
+      '会员姓名',
+      '购卡年限',
+      '订单金额',
+      '状态',
+      '创建时间',
+    ])
+    expect(rowsInFile.slice(1).map((r) => r[0])).toEqual(previewed)
+    expect(rowsInFile.slice(1).every((r) => r[4] === '已到期')).toBe(true)
+    expect(success).toHaveBeenCalledWith('已导出 6 笔订单')
+    await closed()
+  })
+
+  test('导出勾选记录：文件名标明勾选记录，只含可导出的订单', async () => {
+    await openOrders()
+    await userEvent.click(within(rowOf('范思远')).getByRole('checkbox')) // 待审核
+    await clickTab('已到期')
+    await userEvent.click(within(rowOf('王建国')).getByRole('checkbox'))
+    await openPreview('导出勾选记录')
+    await userEvent.click(confirmButton())
+
+    expect(files[0].name).toMatch(/^订单导出_勾选记录_\d{8}-\d{6}\.csv$/)
+    const rowsInFile = await read(files[0])
+    expect(rowsInFile.slice(1).map((r) => r[1])).toEqual(['王建国'])
+  })
+
+  test('预览后店长为王建国续了卡：文件仍是确认时预览的内容，不重新读取', async () => {
+    await openOrders('/orders?tab=expired')
+    await userEvent.click(within(rowOf('王建国')).getByRole('checkbox'))
+    await openPreview('导出勾选记录')
+
+    const manager = axios.create({
+      baseURL: '/api',
+      adapter: createMockAdapter({ delay: 0 }),
+      headers: { Authorization: `Bearer ${tokenFor(MANAGER)}` },
+    })
+    const [wang] = (
+      await manager.get('/orders', { params: { memberName: '王建国' } })
+    ).data.items
+    await act(() =>
+      manager.post(
+        '/orders/renew',
+        { orders: [{ id: wang.id, version: wang.version }], years: 1 },
+        {
+          headers: {
+            'Idempotency-Key': 'e6a2c9f4-8b13-4d70-a5e1-3c7f9d2b6a84',
+          },
+        },
+      ),
+    )
+    await userEvent.click(confirmButton())
+
+    const [, row] = await read(files[0])
+    expect(row.slice(1, 3)).toEqual(['王建国', '5'])
+    expect(row[4]).toBe('已到期')
+  })
+
+  test('连续导出三次：每次的临时链接都已移除，对象 URL 全部释放', async () => {
+    await openOrders('/orders?tab=completed')
+    for (let i = 0; i < 3; i++) {
+      await openPreview('导出筛选结果')
+      await userEvent.click(confirmButton())
+      await closed()
+    }
+    expect(files).toHaveLength(3)
+    expect(files.every((f) => f.linkInPage)).toBe(true) // 点击时链接在页面中
+    expect(document.querySelectorAll('a[download]')).toHaveLength(0)
+    await waitFor(() => expect(revoked).toEqual(files.map((f) => f.url)))
+  })
+
+  test('浏览器无法生成文件：提示失败，预览保留，可再次确认', async () => {
+    const error = vi.spyOn(message, 'error')
+    await openOrders('/orders?tab=expired')
+    const previewed = await openPreview('导出筛选结果')
+
+    createFails = true
+    await userEvent.click(confirmButton())
+    expect(error).toHaveBeenCalledWith('导出文件生成失败，请重试')
+    expect(confirmButton()).toBeEnabled()
+    expect(files).toHaveLength(0)
+
+    createFails = false
+    await userEvent.click(confirmButton())
+    expect(files).toHaveLength(1)
+    expect((await read(files[0])).slice(1).map((r) => r[0])).toEqual(previewed)
+    await closed()
+  })
+
+  test('“进行中”没有可导出订单：不能确认，不生成空文件', async () => {
+    await openOrders('/orders?tab=in_progress')
+    await openPreview('导出筛选结果')
+    expect(confirmButton()).toBeDisabled()
+    await userEvent.click(confirmButton())
+    expect(files).toHaveLength(0)
+  })
+
+  describe('批量测试数据集', () => {
+    beforeEach(() => resetMockDb(createBulkTestOrders()))
+
+    test('已到期 15 笔分两页：导出筛选结果的文件包含全部 15 笔', async () => {
+      await openOrders('/orders?tab=expired')
+      expect(rows()).toHaveLength(10)
+      const previewed = await openPreview('导出筛选结果')
+      expect(previewed).toHaveLength(15)
+      await userEvent.click(confirmButton())
+
+      const rowsInFile = (await read(files[0])).slice(1)
+      expect(rowsInFile.map((r) => r[0])).toEqual(previewed)
+      expect(rowsInFile.every((r) => r.length === 6 && r[4] === '已到期')).toBe(
+        true,
+      )
+    })
   })
 })
