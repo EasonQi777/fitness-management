@@ -1,17 +1,18 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { message } from 'antd'
-import { AxiosError } from 'axios'
+import axios, { AxiosError } from 'axios'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import AppProviders from '../AppProviders'
 import { createErrorBody } from '../api/errors'
 import { http } from '../api/http'
+import { createMockAdapter } from '../mock/adapter'
 import { createBulkTestOrders } from '../mock/bulkSeed'
 import { resetMockDb } from '../mock/db'
 import { routes } from '../router/routes'
 import { useAuthStore } from '../store/authStore'
-import { authOf, FRONT_DESK } from '../test/fixtures'
+import { authOf, FRONT_DESK, MANAGER, tokenFor } from '../test/fixtures'
 
 const initial = useAuthStore.getState()
 
@@ -587,5 +588,219 @@ describe('查询竞态', () => {
     expect(screen.getByRole('tab', { name: '已取消', selected: true }))
     expect(totalText()).toBe('共 6 条')
     expect(statuses().every((s) => s === '已取消')).toBe(true)
+  })
+})
+
+describe('续卡', () => {
+  // 店长在另一台电脑上操作
+  const manager = axios.create({
+    baseURL: '/api',
+    adapter: createMockAdapter({ delay: 0 }),
+    headers: { Authorization: `Bearer ${tokenFor(MANAGER)}` },
+  })
+
+  // 记录续卡请求；network = 'unreachable' 时下一次续卡请求无法送达服务器
+  let renewRequests
+  let network
+  beforeEach(() => {
+    renewRequests = 0
+    network = null
+    http.defaults.adapter = (config) => {
+      if (config.url !== '/orders/renew') return realAdapter(config)
+      renewRequests++
+      if (network === 'unreachable') {
+        network = null
+        return Promise.reject(
+          new AxiosError('Network Error', 'ERR_NETWORK', config),
+        )
+      }
+      return realAdapter(config)
+    }
+  })
+  afterEach(() => message.destroy())
+
+  const rowOf = (name) => rows().find((tr) => cellOf(tr, '会员姓名') === name)
+  const toggle = (name) =>
+    userEvent.click(within(rowOf(name)).getByRole('checkbox'))
+  const selectedCount = () =>
+    Number(document.querySelector('[aria-live] strong').textContent)
+  const goToPage = (n) =>
+    andQuery(() => userEvent.click(screen.getByTitle(String(n))))
+  const batchButton = () => screen.getByRole('button', { name: '批量续卡' })
+  const yearsInput = () => screen.getByLabelText('续卡年限')
+  const renewDialog = () => yearsInput().closest('.ant-modal')
+
+  async function setYears(value) {
+    await userEvent.clear(yearsInput())
+    await userEvent.type(yearsInput(), value)
+  }
+  /** 确认续卡，等待弹窗关闭与列表刷新完成 */
+  async function confirmAndWait() {
+    await userEvent.click(screen.getByRole('button', { name: /确认续卡/ }))
+    await waitFor(
+      () => expect(screen.queryByLabelText('续卡年限')).not.toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+    await settled()
+  }
+  /** 店长按姓名查询到的订单 */
+  const findAsManager = async (memberName, tab = 'all') =>
+    (await manager.get('/orders', { params: { tab, memberName } })).data.items
+
+  test('单条续卡：已到期中点王建国的“续卡”，续 5 年后从已到期消失，进行中可查到', async () => {
+    await openOrders('/orders?tab=expired')
+    await userEvent.click(
+      within(rowOf('王建国')).getByRole('button', { name: /续\s*卡/ }),
+    )
+    expect(
+      within(renewDialog()).getByText('订单 FM20190309001（王建国）'),
+    ).toBeInTheDocument()
+    await setYears('5')
+    expect(within(renewDialog()).getByText(/已享八折/)).toBeInTheDocument()
+    await confirmAndWait()
+
+    expect(names()).not.toContain('王建国')
+    expect(totalText()).toBe('共 5 条')
+    await clickTab('进行中')
+    await userEvent.type(screen.getByLabelText('会员姓名'), '王建国')
+    await submitSearch()
+    expect(names()).toEqual(['王建国'])
+    expect(cellOf(rowOf('王建国'), '购卡年限')).toBe('10 年')
+    expect(cellOf(rowOf('王建国'), '状态')).toBe('待审核')
+    expect(cellOf(rowOf('王建国'), '订单金额（元）')).toBe('2,400.00')
+  })
+
+  test('单条续卡不影响已勾选的其他订单', async () => {
+    await openOrders('/orders?tab=expired')
+    await toggle('李秀英')
+    await userEvent.click(
+      within(rowOf('王建国')).getByRole('button', { name: /续\s*卡/ }),
+    )
+    await confirmAndWait()
+    expect(selectedCount()).toBe(1)
+  })
+
+  test('未勾选订单时“批量续卡”不可用', async () => {
+    await openOrders()
+    expect(batchButton()).toBeDisabled()
+  })
+
+  test('勾选了待审核订单：列出不可续卡的订单，不打开续卡弹窗、不发送请求', async () => {
+    await openOrders()
+    await toggle('范思远') // 待审核
+    await clickTab('已到期')
+    await toggle('王建国')
+    await userEvent.click(batchButton())
+
+    const dialog = await screen.findByRole('dialog', {
+      name: '已选订单中有 1 笔不可续卡',
+    })
+    expect(
+      within(dialog).getByText('FM20261014001（范思远，待审核）'),
+    ).toBeInTheDocument()
+    expect(within(dialog).queryByText(/王建国/)).toBeNull()
+    expect(screen.queryByLabelText('续卡年限')).not.toBeInTheDocument()
+    expect(renewRequests).toBe(0)
+
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: '知道了' }),
+    )
+    expect(selectedCount()).toBe(2)
+    expect(totalText()).toBe('共 6 条')
+  })
+
+  test('勾选后店长先续了李秀英：接口拒绝，弹窗列出原因，勾选与年限都保留', async () => {
+    await openOrders('/orders?tab=expired')
+    await toggle('王建国')
+    await toggle('李秀英')
+    const [li] = await findAsManager('李秀英', 'expired')
+    await act(() =>
+      manager.post(
+        '/orders/renew',
+        { orders: [{ id: li.id, version: li.version }], years: 1 },
+        {
+          headers: {
+            'Idempotency-Key': 'd2c7e9a4-5f18-4b3e-8a6d-1e9f0b7c3a52',
+          },
+        },
+      ),
+    )
+
+    await userEvent.click(batchButton())
+    await setYears('3')
+    await userEvent.click(screen.getByRole('button', { name: /确认续卡/ }))
+
+    expect(
+      await within(renewDialog()).findByText(
+        'FM20200721001：订单已被他人修改，请刷新后重试',
+      ),
+    ).toBeInTheDocument()
+    expect(yearsInput()).toHaveValue('3')
+    expect(selectedCount()).toBe(2)
+    expect((await findAsManager('王建国', 'expired'))[0].cardYears).toBe(5)
+  })
+
+  test('网络中断：续卡失败，弹窗、年限与勾选都保留；恢复后重试成功', async () => {
+    await openOrders('/orders?tab=expired')
+    await toggle('王建国')
+    await toggle('李秀英')
+    await userEvent.click(batchButton())
+    await setYears('2')
+    network = 'unreachable'
+    await userEvent.click(screen.getByRole('button', { name: /确认续卡/ }))
+
+    expect(await screen.findByText('网络异常，请稍后重试')).toBeInTheDocument()
+    expect(yearsInput()).toHaveValue('2')
+    expect(selectedCount()).toBe(2)
+    expect((await findAsManager('王建国', 'expired'))[0].cardYears).toBe(5)
+
+    await confirmAndWait()
+    expect(selectedCount()).toBe(0)
+    expect(totalText()).toBe('共 4 条')
+    expect(renewRequests).toBe(2)
+  })
+
+  test('取消续卡弹窗：订单与勾选不变', async () => {
+    await openOrders('/orders?tab=expired')
+    await toggle('王建国')
+    await userEvent.click(batchButton())
+    await setYears('3')
+    await userEvent.click(
+      within(renewDialog()).getByRole('button', { name: /取\s*消/ }),
+    )
+    expect(screen.queryByLabelText('续卡年限')).not.toBeInTheDocument()
+    expect(renewRequests).toBe(0)
+    expect(selectedCount()).toBe(1)
+    expect(totalText()).toBe('共 6 条')
+  })
+
+  describe('批量测试数据集', () => {
+    beforeEach(() => resetMockDb(createBulkTestOrders()))
+
+    test('跨两页勾选 12 笔已到期订单续 5 年：总额 57,600.00，成功后清空勾选，只剩 3 笔已到期', async () => {
+      await openOrders('/orders?tab=expired')
+      await userEvent.click(document.querySelector('thead .ant-checkbox-input'))
+      await goToPage(2)
+      await userEvent.click(within(rows()[0]).getByRole('checkbox'))
+      await userEvent.click(within(rows()[1]).getByRole('checkbox'))
+      expect(selectedCount()).toBe(12)
+
+      await userEvent.click(batchButton())
+      expect(
+        within(renewDialog()).getByText(/共 12 笔订单/),
+      ).toBeInTheDocument()
+      await setYears('5')
+      expect(within(renewDialog()).getByTestId('renew-fees')).toHaveTextContent(
+        '应付总额¥ 57,600.00（12 笔 × ¥ 4,800.00）',
+      )
+      await confirmAndWait()
+
+      expect(selectedCount()).toBe(0)
+      expect(batchButton()).toBeDisabled()
+      expect(totalText()).toBe('共 3 条')
+      expect(renewRequests).toBe(1)
+      await clickTab('进行中')
+      expect(totalText()).toBe('共 27 条')
+    })
   })
 })

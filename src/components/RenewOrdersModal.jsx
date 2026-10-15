@@ -29,6 +29,7 @@ const yearsRule = {
 }
 
 const yuan = (n) => `¥ ${formatAmount(n)}`
+const INITIAL_YEARS = 1
 
 function Fees({ years, count }) {
   const unit = calcRenewPrice(years)
@@ -84,7 +85,9 @@ function Fees({ years, count }) {
  */
 export default function RenewOrdersModal({ orders, onCancel, onSuccess }) {
   const [form] = Form.useForm()
-  const years = Form.useWatch('years', form)
+  // 表单挂载前 useWatch 为 undefined，先用初始值，避免打开时闪现“请先填写”；清空输入为 null
+  const watched = Form.useWatch('years', form)
+  const years = watched === undefined ? INITIAL_YEARS : watched
   const [submitting, setSubmitting] = useState(false)
   const [batchError, setBatchError] = useState(null)
   // 同步锁挡住回车与连点；同一次提交意图复用幂等键，修改年限后作废
@@ -143,7 +146,7 @@ export default function RenewOrdersModal({ orders, onCancel, onSuccess }) {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ years: 1 }}
+        initialValues={{ years: INITIAL_YEARS }}
         disabled={submitting}
         onFinish={submit}
         onValuesChange={() => (keyRef.current = null)}
