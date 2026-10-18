@@ -10,7 +10,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import CancelOrdersModal from '../components/CancelOrdersModal'
 import ExportPreviewModal from '../components/ExportPreviewModal'
 import OrderTable from '../components/OrderTable'
@@ -92,8 +92,21 @@ export default function OrdersPage() {
       setQuery({ page: lastPage }, { replace: true })
   }, [loading, error, query.page, lastPage, setQuery])
 
-  // 输入框是草稿；已提交条件变化（含浏览器前进后退）时用其回填
+  // 本页最近一次提交的输入框内容。地址栏在提交后异步更新，期间员工可能已经输入了新的草稿
+  const submittedRef = useRef(null)
+
+  // 输入框是草稿；已提交条件变化（含浏览器前进后退）时用其回填。
+  // 由本页提交引起的变化，若输入框已与提交时不同（提交后又继续输入），不覆盖新草稿
   useEffect(() => {
+    const submitted = submittedRef.current
+    submittedRef.current = null
+    const current = form.getFieldsValue(['orderNo', 'memberName'])
+    if (
+      submitted &&
+      ((current.orderNo ?? '') !== submitted.orderNo ||
+        (current.memberName ?? '') !== submitted.memberName)
+    )
+      return
     form.setFieldsValue({
       orderNo: query.orderNo,
       memberName: query.memberName,
@@ -101,13 +114,18 @@ export default function OrdersPage() {
   }, [form, query.orderNo, query.memberName])
 
   function search({ orderNo = '', memberName = '' }) {
-    // 条件未变时（如重复点击查询）按原条件重新查询
-    if (!setQuery({ orderNo, memberName })) refresh()
+    submittedRef.current = { orderNo, memberName }
+    // 条件未变时（如重复点击查询）按原条件重新查询；地址栏不变，回填效果不会触发
+    if (!setQuery({ orderNo, memberName })) {
+      submittedRef.current = null
+      refresh()
+    }
   }
 
   function reset() {
     form.setFieldsValue({ orderNo: '', memberName: '' })
-    setQuery({ orderNo: '', memberName: '' })
+    submittedRef.current = { orderNo: '', memberName: '' }
+    if (!setQuery({ orderNo: '', memberName: '' })) submittedRef.current = null
   }
 
   // 按勾选时的状态预检：含不合格订单时禁用对应批量操作；接口仍做最终校验

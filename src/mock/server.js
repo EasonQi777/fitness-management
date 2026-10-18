@@ -1,6 +1,7 @@
 // 内存模拟服务：只处理已解析的请求对象，与 axios 无关。
 
 import { createErrorBody } from '../api/errors'
+import { take } from './faults'
 import { MockHttpError } from './httpError'
 import {
   cancelOrders,
@@ -70,6 +71,12 @@ const routes = {
   'GET /operation-logs': { handler: listOperationLogs },
 }
 
+const WRITES = new Set([
+  'POST /orders',
+  'POST /orders/renew',
+  'POST /orders/cancel',
+])
+
 /**
  * 处理一次请求
  * @param {{ method: string, path: string, query: URLSearchParams,
@@ -78,9 +85,18 @@ const routes = {
  */
 export function handleRequest(req) {
   try {
-    const route = routes[`${req.method.toUpperCase()} ${req.path}`]
+    const key = `${req.method.toUpperCase()} ${req.path}`
+    const route = routes[key]
     if (!route) throw new MockHttpError('NOT_FOUND', '接口不存在')
+    if (!route.public && take('unauthorized'))
+      throw new MockHttpError('UNAUTHORIZED', '登录已失效，请重新登录')
     const user = route.public ? null : requireUser(req.headers)
+    // 异常场景在处理器之前触发：失败的写操作不会修改订单、不写日志、不保存幂等结果
+    if (
+      (key === 'GET /orders' && take('queryFailures')) ||
+      (WRITES.has(key) && take('writeFailures'))
+    )
+      throw new MockHttpError('INTERNAL_ERROR', '服务异常，请稍后重试')
     return { status: 200, body: route.handler(req, { user }) }
   } catch (error) {
     if (error instanceof MockHttpError)
