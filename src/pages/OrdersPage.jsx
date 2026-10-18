@@ -3,6 +3,7 @@ import {
   Empty,
   Form,
   Input,
+  message,
   Result,
   Space,
   Tabs,
@@ -11,6 +12,7 @@ import {
 } from 'antd'
 import { useEffect, useState } from 'react'
 import CancelOrdersModal from '../components/CancelOrdersModal'
+import ExportPreviewModal from '../components/ExportPreviewModal'
 import OrderTable from '../components/OrderTable'
 import RenewOrdersModal from '../components/RenewOrdersModal'
 import SelectedOrdersDrawer from '../components/SelectedOrdersDrawer'
@@ -24,6 +26,8 @@ import {
 import { useOrderQuery } from '../hooks/useOrderQuery'
 import { useOrderSelection } from '../hooks/useOrderSelection'
 import { useOrders } from '../hooks/useOrders'
+import { downloadText } from '../utils/download'
+import { buildOrdersCsv, ordersCsvFileName } from '../utils/ordersCsv'
 
 const TAB_ITEMS = ORDER_TABS.map(({ key, label }) => ({ key, label }))
 
@@ -75,6 +79,8 @@ export default function OrdersPage() {
   const [renewing, setRenewing] = useState(null)
   // 待确认撤单的订单，null 表示弹窗关闭
   const [cancelling, setCancelling] = useState(null)
+  // 导出预览请求，null 表示弹窗关闭；打开时固定，预览期间不会因页面变化而重新请求
+  const [exporting, setExporting] = useState(null)
   // 最近一次写入成功：{ text, queryKey }。写后刷新失败时据此说明“操作已成功”，避免员工误以为失败而重复操作
   const [lastWrite, setLastWrite] = useState(null)
   const queryKey = JSON.stringify(query)
@@ -126,6 +132,22 @@ export default function OrdersPage() {
     refresh()
   }
 
+  /** 按确认的预览快照生成文件，不再重新读取数据；失败时保留预览，可再次确认 */
+  function exportCsv({ scope, items }) {
+    try {
+      downloadText(
+        ordersCsvFileName(scope),
+        buildOrdersCsv(items),
+        'text/csv;charset=utf-8',
+      )
+    } catch {
+      message.error('导出文件生成失败，请重试')
+      return
+    }
+    message.success(`已导出 ${items.length} 笔订单`)
+    setExporting(null)
+  }
+
   const refreshFailedAfterWrite = error && lastWrite?.queryKey === queryKey
 
   const filtered =
@@ -163,6 +185,21 @@ export default function OrdersPage() {
               查询
             </Button>
             <Button onClick={reset}>重置</Button>
+            {/* 按已提交的条件（URL）导出全部分页，而不是输入框中的草稿 */}
+            <Button
+              onClick={() =>
+                setExporting({
+                  scope: 'filtered',
+                  filters: {
+                    tab: query.tab,
+                    orderNo: query.orderNo,
+                    memberName: query.memberName,
+                  },
+                })
+              }
+            >
+              导出筛选结果
+            </Button>
           </Space>
         </Form.Item>
       </Form>
@@ -205,7 +242,24 @@ export default function OrdersPage() {
           blockedAs="不是待制卡或待寄卡订单"
           onClick={() => setCancelling(selection.selectedOrders)}
         />
+        <Button
+          size="small"
+          disabled={selection.count === 0}
+          onClick={() =>
+            setExporting({ scope: 'selected', ids: selection.selectedIds })
+          }
+        >
+          导出勾选记录
+        </Button>
       </div>
+
+      {exporting && (
+        <ExportPreviewModal
+          request={exporting}
+          onCancel={() => setExporting(null)}
+          onConfirm={exportCsv}
+        />
+      )}
 
       {cancelling && (
         <CancelOrdersModal

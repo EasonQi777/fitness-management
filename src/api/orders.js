@@ -49,3 +49,18 @@ export const cancelOrders = (body, { idempotencyKey }) =>
       headers: { 'Idempotency-Key': idempotencyKey },
     })
     .then((res) => res.data)
+
+/**
+ * 导出预览。弹窗在自己的区域展示失败原因并提供重试，不使用请求层 toast。
+ * @param {{ scope: 'filtered', filters: { tab: string, orderNo: string, memberName: string } }
+ *   | { scope: 'selected', ids: string[] }} body
+ * @param {{ signal?: AbortSignal }} [options]
+ * @returns {Promise<{
+ *   items: Pick<import('../domain/orderRules').Order, 'id' | 'orderNo' | 'memberName' | 'cardYears' | 'amount' | 'status' | 'createdAt'>[],
+ *   excluded: import('./errors').InvalidOrder[],
+ * }>}
+ */
+export const exportPreview = (body, { signal } = {}) =>
+  http
+    .post('/orders/export-preview', body, { signal, skipErrorToast: true })
+    .then((res) => res.data)
