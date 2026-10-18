@@ -1,6 +1,7 @@
 // axios 自定义 adapter：把 /api 请求交给内存模拟服务，行为尽量与真实 HTTP 一致。
 
 import axios, { AxiosError, CanceledError } from 'axios'
+import { faults } from './faults'
 import { handleRequest } from './server'
 
 const API_PREFIX = '/api'
@@ -38,6 +39,16 @@ export function createMockAdapter({ delay = 300 } = {}) {
     const path = url.pathname.startsWith(API_PREFIX)
       ? url.pathname.slice(API_PREFIX.length) || '/'
       : url.pathname
+
+    // 异常场景：会员姓名包含指定关键词的列表查询额外等待，用于复现“先慢后快”
+    const slow = faults.slowQuery
+    if (
+      slow &&
+      path === '/orders' &&
+      (config.method ?? 'get') === 'get' &&
+      url.searchParams.get('memberName')?.includes(slow.keyword)
+    )
+      await wait(slow.ms, config.signal)
 
     const headers = {}
     for (const [k, v] of Object.entries(config.headers?.toJSON?.() ?? {}))
