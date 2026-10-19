@@ -686,6 +686,19 @@ describe('续卡', () => {
     expect(batchButton()).toBeDisabled()
   })
 
+  test('全选第 1 页 10 笔进行中订单：提示列出前 5 个订单号并注明共 10 笔', async () => {
+    await openOrders()
+    await userEvent.click(document.querySelector('thead .ant-checkbox-input'))
+    expect(selectedCount()).toBe(10)
+    expect(batchButton()).toBeDisabled()
+    expect(
+      screen.getByText(
+        '已选中有 10 笔不是已到期订单，不能批量续卡：' +
+          'FM20261014001、FM20261013002、FM20261013001、FM20261012001、FM20261011001 等 10 笔',
+      ),
+    ).toBeInTheDocument()
+  })
+
   test('勾选中有待审核订单：“批量续卡”不可用，提示并列出该订单；取消勾选后恢复', async () => {
     await openOrders('/orders?tab=expired')
     await toggle('王建国')
@@ -695,7 +708,9 @@ describe('续卡', () => {
     await toggle('范思远') // 待审核
     expect(batchButton()).toBeDisabled()
     expect(
-      screen.getByText('已选中有 1 笔不是已到期订单，不能批量续卡'),
+      screen.getByText(
+        '已选中有 1 笔不是已到期订单，不能批量续卡：FM20261014001',
+      ),
     ).toBeInTheDocument()
     await userEvent.hover(batchButton().parentElement)
     expect(
@@ -870,7 +885,9 @@ describe('批量撤单', () => {
     await toggle('范思远') // 待审核
     expect(cancelButton()).toBeDisabled()
     expect(
-      screen.getByText('已选中有 1 笔不是待制卡或待寄卡订单，不能批量撤单'),
+      screen.getByText(
+        '已选中有 1 笔不是待制卡或待寄卡订单，不能批量撤单：FM20261014001',
+      ),
     ).toBeInTheDocument()
     await userEvent.hover(cancelButton().parentElement)
     expect(

@@ -8,6 +8,8 @@ const bulkPort = 5176
 
 export default defineConfig({
   testDir: './e2e',
+  // 刚执行 npm ci 后首次运行时，三个开发服务需要冷启动编译依赖，默认 30 秒可能不够
+  timeout: 60_000,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     screenshot: 'only-on-failure',

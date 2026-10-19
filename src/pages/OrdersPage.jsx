@@ -34,6 +34,15 @@ const TAB_ITEMS = ORDER_TABS.map(({ key, label }) => ({ key, label }))
 const summaryOf = (o) =>
   `${o.orderNo}（${o.memberName}，${ORDER_STATUS[o.status]?.label ?? o.status}）`
 
+// 提示中直接列出的订单号数量；更多时以“等 N 笔”结尾，完整列表见按钮悬停提示
+const LISTED_ORDER_NOS = 5
+const listOrderNos = (orders) =>
+  orders
+    .slice(0, LISTED_ORDER_NOS)
+    .map((o) => o.orderNo)
+    .join('、') +
+  (orders.length > LISTED_ORDER_NOS ? ` 等 ${orders.length} 笔` : '')
+
 /**
  * 批量操作按钮：未勾选或勾选中有不合格订单时禁用，并说明原因、列出需移除的订单
  * @param {{ label: string, count: number, blocked: { orderNo: string, memberName: string, status: string }[],
@@ -61,7 +70,8 @@ function BatchButton({ label, count, blocked, rule, blockedAs, ...button }) {
       </Tooltip>
       {blocked.length > 0 && (
         <Typography.Text type="warning">
-          已选中有 {blocked.length} 笔{blockedAs}，不能{label}
+          已选中有 {blocked.length} 笔{blockedAs}，不能{label}：
+          {listOrderNos(blocked)}
         </Typography.Text>
       )}
     </>
