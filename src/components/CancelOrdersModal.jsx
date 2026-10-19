@@ -4,6 +4,7 @@ import { parseApiError } from '../api/errors'
 import { cancelOrders } from '../api/orders'
 import { ORDER_STATUS } from '../domain/orderStatus'
 import InvalidOrdersAlert from './InvalidOrdersAlert'
+import { useRestoreFocus } from '../hooks/useRestoreFocus'
 
 const columns = [
   { title: '订单号', dataIndex: 'orderNo', width: 140 },
@@ -29,6 +30,7 @@ const columns = [
  * }} props
  */
 export default function CancelOrdersModal({ orders, onCancel, onSuccess }) {
+  useRestoreFocus()
   const [submitting, setSubmitting] = useState(false)
   const [batchError, setBatchError] = useState(null)
   // 同步锁挡住连点；本次打开的订单固定，重试复用同一个幂等键

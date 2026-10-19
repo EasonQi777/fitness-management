@@ -1,5 +1,6 @@
 // 内存数据库：页面刷新后模块重新加载，订单恢复为初始数据。
 
+import { createBulkTestOrders } from './bulkSeed'
 import { createSeedOrders } from './seed'
 
 export const db = {
@@ -21,4 +22,9 @@ export function resetMockDb(orders = createSeedOrders()) {
   db.logs = []
 }
 
-resetMockDb()
+// VITE_MOCK_DATASET=bulk 时加载批量测试数据集，供端到端测试验证跨页批量操作（见 playwright.config.js）。
+// 默认为 36 笔演示数据；Vitest 不读取该变量，测试通过 resetMockDb 选择数据集。
+const useBulk =
+  import.meta.env.MODE !== 'test' &&
+  import.meta.env.VITE_MOCK_DATASET === 'bulk'
+resetMockDb(useBulk ? createBulkTestOrders() : createSeedOrders())

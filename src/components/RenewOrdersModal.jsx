@@ -17,6 +17,7 @@ import {
   PRICE_PER_YEAR,
 } from '../domain/orderRules'
 import { formatAmount } from '../utils/format'
+import { useRestoreFocus } from '../hooks/useRestoreFocus'
 
 const yearsRule = {
   validator: (_, v) => {
@@ -84,6 +85,7 @@ function Fees({ years, count }) {
  * }} props
  */
 export default function RenewOrdersModal({ orders, onCancel, onSuccess }) {
+  useRestoreFocus()
   const [form] = Form.useForm()
   // 表单挂载前 useWatch 为 undefined，先用初始值，避免打开时闪现“请先填写”；清空输入为 null
   const watched = Form.useWatch('years', form)
