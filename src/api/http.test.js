@@ -147,8 +147,13 @@ describe('错误提示', () => {
       createErrorBody('INTERNAL_ERROR', '服务异常，请稍后重试'),
     )
     await Promise.all([request(adapter), request(adapter), request(adapter)])
-    await waitFor(() =>
-      expect(document.querySelectorAll('.ant-message-notice')).toHaveLength(1),
+    // 提示由 antd 异步渲染，全量并行运行时可能超过默认的 1 秒
+    await waitFor(
+      () =>
+        expect(document.querySelectorAll('.ant-message-notice')).toHaveLength(
+          1,
+        ),
+      { timeout: 3000 },
     )
     expect(document.querySelector('.ant-message').textContent).toContain(
       '服务异常',

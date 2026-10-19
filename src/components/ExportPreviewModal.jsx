@@ -4,6 +4,7 @@ import { parseApiError } from '../api/errors'
 import { exportPreview } from '../api/orders'
 import { ORDER_STATUS } from '../domain/orderStatus'
 import { formatAmount } from '../utils/format'
+import { useRestoreFocus } from '../hooks/useRestoreFocus'
 
 const columns = [
   { title: '订单号', dataIndex: 'orderNo', width: 140 },
@@ -39,6 +40,7 @@ const TITLES = { filtered: '导出筛选结果', selected: '导出勾选记录' 
  * }} props
  */
 export default function ExportPreviewModal({ request, onCancel, onConfirm }) {
+  useRestoreFocus()
   const [attempt, setAttempt] = useState(0)
   // { attempt, preview?, error? }：只采用当前这次请求的结果
   const [result, setResult] = useState(null)

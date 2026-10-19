@@ -3,6 +3,8 @@ import { defineConfig, devices } from '@playwright/test'
 const port = 5174
 // 异常场景使用独立的开发服务，不影响主流程测试的默认数据与行为
 const faultPort = 5175
+// 跨页批量操作使用批量测试数据集（已到期 15 笔、可撤单 13 笔，均超过一页）
+const bulkPort = 5176
 
 export default defineConfig({
   testDir: './e2e',
@@ -14,10 +16,18 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      testIgnore: 'faults/**',
+      testIgnore: ['faults/**', 'bulk/**'],
       use: {
         ...devices['Desktop Chrome'],
         baseURL: `http://localhost:${port}`,
+      },
+    },
+    {
+      name: 'bulk',
+      testMatch: 'bulk/**/*.spec.js',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: `http://localhost:${bulkPort}`,
       },
     },
     {
@@ -44,6 +54,12 @@ export default defineConfig({
         VITE_MOCK_FAIL_QUERY: '1',
         VITE_MOCK_SLOW_QUERY: '袁:1500',
       },
+    },
+    {
+      command: `npm run dev -- --port ${bulkPort} --strictPort`,
+      url: `http://localhost:${bulkPort}`,
+      reuseExistingServer: false,
+      env: { VITE_MOCK_DATASET: 'bulk' },
     },
   ],
 })
